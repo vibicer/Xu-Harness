@@ -2263,6 +2263,70 @@ class TestQueueSend:
         # once flushed, the kept id can no longer be cancelled either
         assert agent.cancel_queued(sess.id, ids["keep"]) is False
 
+    def test_steer_queued_promotes_and_reports(self, data_home):
+        """steer_queued moves a queued message to the front so the turn's
+        chaining tail runs it next, and reports False for an unknown id."""
+        from xu_brain.features.agent.loop import Agent
+        from xu_brain.features.session import SessionStore
+        from xu_brain.plugins import PluginBus
+
+        store = SessionStore(data_home)
+        config = Config(data_home)
+        agent = Agent(store, data_home, None, None, ApprovalManager(config),
+                      MemoryStore(data_home), SkillsEngine(data_home),
+                      PluginBus(data_home), config)
+        sess = store.create(cwd=str(data_home))
+
+        # Seed a queue directly (no running turn needed for the reorder logic).
+        agent._queued[sess.id] = [("a", "first", None), ("b", "second", None), ("c", "third", None)]
+
+        # Unknown id → no-op, no reorder.
+        assert agent.steer_queued(sess.id, "nope") is False
+        assert [q[0] for q in agent._queued[sess.id]] == ["a", "b", "c"]
+
+        # Steering the last message moves it to the front (runs next on chain).
+        assert agent.steer_queued(sess.id, "c") is True
+        assert [q[0] for q in agent._queued[sess.id]] == ["c", "a", "b"]
+
+        # Steering the already-front message is a no-op success.
+        assert agent.steer_queued(sess.id, "c") is True
+        assert [q[0] for q in agent._queued[sess.id]] == ["c", "a", "b"]
+
+    def test_stop_does_not_double_cancel(self, data_home):
+        """A second stop/steer while the first cancel is still unwinding must
+        not double-cancel the turn task: the stray cancel would land inside
+        the turn's finally, after _chain_queued popped the steered row,
+        losing that message and orphaning the rest of the queue."""
+        import asyncio
+
+        from xu_brain.features.agent.loop import Agent
+        from xu_brain.features.session import SessionStore
+        from xu_brain.plugins import PluginBus
+
+        store = SessionStore(data_home)
+        config = Config(data_home)
+        agent = Agent(store, data_home, None, None, ApprovalManager(config),
+                      MemoryStore(data_home), SkillsEngine(data_home),
+                      PluginBus(data_home), config)
+        sess = store.create(cwd=str(data_home))
+
+        async def scenario():
+            async def parked():
+                await asyncio.Event().wait()
+            task = asyncio.get_running_loop().create_task(parked())
+            agent._turns[sess.id] = task
+            agent._stop_events[sess.id] = asyncio.Event()
+            await agent.stop(sess.id)
+            await agent.stop(sess.id)  # rapid double-fire while unwinding
+            assert task.cancelling() == 1, "double cancel corrupts the chain handoff"
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+
+        asyncio.run(scenario())
+
 
 class TestActivityLogs:
     def test_activity_log_caps_and_filters(self):

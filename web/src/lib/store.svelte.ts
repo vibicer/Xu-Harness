@@ -597,6 +597,16 @@ this.persistSessionTabs();
     await this.client.call("session.queue.cancel", { id: sid, queued_id: q.id });
   }
 
+  /** Steer the queue: interrupt the running turn so the queued messages run
+   *  now — the brain stops the turn and its chaining tail starts the first
+   *  queued message as a fresh turn; the rest follow in order. */
+  async steerQueue(): Promise<void> {
+    const sid = this.sessionId;
+    const q = this.queued.find((x) => x.id);
+    if (!sid || !q?.id) return; // nothing confirmed by the server yet
+    await this.client.call("session.queue.steer", { id: sid, queued_id: q.id });
+  }
+
   async compressSession(): Promise<{ ok: boolean; async?: boolean; error?: string }> {
     if (!this.sessionId) return { ok: false, error: "no session" };
     // Fire-and-forget: the brain runs compaction off the request path and

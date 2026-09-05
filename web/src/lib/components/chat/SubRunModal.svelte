@@ -21,7 +21,9 @@ class="sub-modal"
 role="dialog"
 aria-modal="true"
 aria-label="sub-agent activity"
+tabindex="-1"
 onclick={(e) => e.target === e.currentTarget && sub.close()}
+onkeydown={(e) => e.key === "Escape" && sub.close()}
 >
 <div class="sub-panel">
 <div class="sub-head">

@@ -131,7 +131,11 @@ class Agent(DelegationMixin, LiveMixin, ContextMixin, PromptMixin, CompactionMix
         if ev:
             ev.set()
         task = self._turns.get(session_id)
-        if task and not task.done():
+        # cancelling() > 0 = a cancel is already in flight (rapid stop/steer
+        # double-click): a second cancel would land inside the turn's finally
+        # and corrupt the _chain_queued handoff (popped row lost, rest of the
+        # queue orphaned). One cancel per turn.
+        if task and not task.done() and task.cancelling() == 0:
             task.cancel()
         # Scope the cleanup to THIS session: cancelling every pending approval
         # / ask would deny or blank another session's in-flight turn.
@@ -283,6 +287,22 @@ class Agent(DelegationMixin, LiveMixin, ContextMixin, PromptMixin, CompactionMix
                 del queued[i]
                 return True
         return False
+
+    def steer_queued(self, session_id: str, queued_id: str) -> bool:
+        """Promote a queued message to the front of the queue.
+
+        Paired with ``stop()`` by ``session.queue.steer``: cancelling the
+        running turn makes the turn's ``finally`` (``_chain_queued``) start the
+        steered message immediately as a fresh turn, ahead of the rest of the
+        queue. Returns False if the id is unknown — it was already spliced into
+        the live turn (it reached the model) and can no longer be steered."""
+        queued = self._queued.get(session_id) or []
+        idx = next((i for i, (qid, _t, _im) in enumerate(queued) if qid == queued_id), -1)
+        if idx < 0:
+            return False
+        if idx > 0:
+            queued.insert(0, queued.pop(idx))
+        return True
 
     # ---- turn execution ----
 

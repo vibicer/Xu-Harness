@@ -2,7 +2,6 @@
   import { tick } from "svelte";
   import { brain } from "../store.svelte";
   import PendingImages from "./chat/PendingImages.svelte";
-  import QueuedTurns from "./chat/QueuedTurns.svelte";
   import Composer from "./chat/Composer.svelte";
   import SubRunModal from "./chat/SubRunModal.svelte";
   import Lightbox from "./Lightbox.svelte";
@@ -125,7 +124,8 @@
   </div>
 
   <PendingImages images={pendingImages} onremove={removeImage} />
-  <QueuedTurns />
+  <!-- QueuedTurns now lives inside Composer's #composer-wrap so the todo
+       badge floats above it instead of colliding. -->
   <SubRunModal {sub} {dancer} idle={DANCE[0]} />
   <Lightbox />
   <Composer bind:composerEl bind:pendingImages bind:busy onsend={scrollToBottom} />

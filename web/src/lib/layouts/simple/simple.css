@@ -481,6 +481,9 @@
 .simple-shell .att-x { border-radius: 0 0 0 8px; }
 .simple-shell .queued-msg { border: 1px dashed var(--border-strong); border-radius: 9px; color: var(--dim); padding: 5px 11px; }
 .simple-shell .queued-tag { color: var(--amber); font-size: 10px; font-weight: 650; letter-spacing: .1em; }
+.simple-shell .queued-steer { flex: none; margin-left: auto; border: 0; background: transparent; color: var(--dim); font-size: 11px; line-height: 1; padding: 2px 5px; cursor: pointer; }
+.simple-shell .queued-steer:hover:not(:disabled) { color: var(--accent, var(--magenta)); }
+.simple-shell .queued-steer:disabled { opacity: .4; cursor: default; }
 .simple-shell .queued-x { flex: none; margin-left: auto; border: 0; background: transparent; color: var(--dim); font-size: 11px; line-height: 1; padding: 2px 5px; cursor: pointer; }
 .simple-shell .queued-x:hover:not(:disabled) { color: var(--danger); }
 .simple-shell .queued-x:disabled { opacity: .4; cursor: default; }

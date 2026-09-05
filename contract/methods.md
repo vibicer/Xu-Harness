@@ -47,6 +47,7 @@ on `ws://127.0.0.1:9876` (override `XU_BRAIN_URL`), JSON-RPC 2.0 message framing
 | `session.stop` | `{ id }` | `{}` | cooperative abort |
 | `session.compress` | `{ id }` | `{ ok, async: true }` | compact the transcript now. Returns *before* the work finishes — the summarizer is a long streaming call, so it runs off the request path and reports via the `compaction.done` event |
 | `session.queue.cancel` | `{ id, queued_id }` | `{ cancelled }` | drop a message queued mid-turn; emits `queue.cancelled` when it was still pending |
+| `session.queue.steer` | `{ id, queued_id }` | `{ steered }` | interrupt the running turn and run a queued message now: promotes it to the front of the queue, then stops the turn so its chaining tail starts it as a fresh turn. `steered: false` when the id was already spliced into the live turn |
 | `workspace.set_cwd` | `{ session_id, cwd }` | `{ cwd }` | CWD row control |
 | `fs.list` | `{ path? }` | `{ path, dirs }` | child directory *names* for the CWD picker. Not confined to the session cwd — it is how the user reaches a new project — and never returns file contents |
 | `state.get` | `{ session_id }` | `{ model, rules, context, cwd, preset }` | agent state panel; rules are per-session; `preset` = active orchestration tree or null |
@@ -100,16 +101,6 @@ on `ws://127.0.0.1:9876` (override `XU_BRAIN_URL`), JSON-RPC 2.0 message framing
 
 Not Core: served by a plugin filling the `rpc` slot, so they are absent when the
 plugin is disabled. The shell must tolerate `-32601 method not found`.
-
-| Method | Params | Result | Notes |
-|---|---|---|---|
-| `fs.tree` | `{ session_id, path }` | `{ path, rel, root, entries: [{ name, dir, size }], parent }` | `filebrowser`: one directory level, dirs first. `path` is relative to the session cwd; `parent` is `null` at the root |
-| `fs.read` | `{ session_id, path }` | `{ path, rel, content, tag, size }` | text only — binary and over-limit files are refused. `tag` is the write guard |
-| `fs.write` | `{ session_id, path, content, tag? }` | `{ path, rel, tag, created }` | creates when absent; a stale `tag` is refused rather than clobbering a concurrent write |
-| `fs.remove` | `{ session_id, path }` | `{ path, rel, removed }` | one file or one *empty* directory; never recursive |
-
-All four resolve `path` against the session cwd and reject anything that escapes
-it (absolute paths, `..`, escaping symlinks).
 
 The `mcp` plugin backs Config → MCP. Every method is a thin skin over one hub,
 so the panel and the agent's `mcp` tool always see the same state.

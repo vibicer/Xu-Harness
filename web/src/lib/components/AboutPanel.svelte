@@ -38,7 +38,8 @@
 </script>
 
 {#if open}
-  <div class="about-backdrop" onclick={close}></div>
+  <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_noninteractive_element_interactions -->
+  <div class="about-backdrop" onclick={close} onkeydown={(e) => e.key === "Escape" && close()} aria-hidden="true"></div>
   <div class="about-panel" role="dialog" aria-modal="true" aria-labelledby="about-title">
     <button type="button" class="about-close" onclick={close} aria-label="Close"><Icon name="x" size={15} /></button>
     <div class="about-preview-wrap">

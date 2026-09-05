@@ -470,17 +470,19 @@
           {:else}
             <div class="rules-presets-list">
               {#each rulePresets as p (p.id)}
-                <button type="button" class="rules-preset-card" class:active={presetSel === p.id}
-                  title="Load these rules into the editor"
-                  onclick={() => { presetSel = p.id; applyRulePreset(p.id); }}>
-                  <span class="rules-preset-meta">
-                    <strong>{p.name}</strong>
-                    <em>{p.rules.length} rule{p.rules.length === 1 ? "" : "s"}</em>
-                  </span>
-                  <span class="rules-preset-snippet">{[p.rules[0], p.rules[1]].filter(Boolean).join(" \u00b7 ") || "\u2014"}</span>
-                  <span class="rules-preset-del" title="Delete preset"
-                    onclick={(e) => { e.stopPropagation(); deleteRulePreset(p.id); }}>&times;</span>
-                </button>
+                <div class="rules-preset-card-wrap">
+                  <button type="button" class="rules-preset-card" class:active={presetSel === p.id}
+                    title="Load these rules into the editor"
+                    onclick={() => { presetSel = p.id; applyRulePreset(p.id); }}>
+                    <span class="rules-preset-meta">
+                      <strong>{p.name}</strong>
+                      <em>{p.rules.length} rule{p.rules.length === 1 ? "" : "s"}</em>
+                    </span>
+                    <span class="rules-preset-snippet">{[p.rules[0], p.rules[1]].filter(Boolean).join(" \u00b7 ") || "\u2014"}</span>
+                  </button>
+                  <button type="button" class="rules-preset-del" title="Delete preset" aria-label="Delete preset {p.name}"
+                    onclick={(e) => deleteRulePreset(p.id)}>&times;</button>
+                </div>
               {/each}
             </div>
           {/if}
@@ -624,7 +626,9 @@
 </div>
 
   {#if cwdOpen}
-    <div class="dir-modal" role="dialog" aria-modal="true" aria-label="choose directory" onclick={(e) => e.target === e.currentTarget && closeCwd()}>
+    <div class="dir-modal" role="dialog" aria-modal="true" aria-label="choose directory" tabindex="-1"
+      onclick={(e) => e.target === e.currentTarget && closeCwd()}
+      onkeydown={(e) => e.key === "Escape" && closeCwd()}>
       <div class="dir-modal-panel">
         <div class="dir-head">
           <span>CHOOSE DIRECTORY</span>

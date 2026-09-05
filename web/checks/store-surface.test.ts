@@ -253,7 +253,7 @@ const PINNED = [
   "setNotify", "setPersona", "setPluginEnabled", "setPluginSetting",
   "setProviderEnabled", "setRules", "setSessionPreset", "setSkill", "setTheme",
   "setToolEnabled", "setView", "shiftSessionTab", "skills", "spawnSubagent", "state",
-  "status", "stop", "subagentActivity", "subagentActivityUpdate", "subagents",
+  "status", "steerQueue", "stop", "subagentActivity", "subagentActivityUpdate", "subagents",
   "subRuns", "switchSession", "testNotify", "testProvider", "theme", "ThemePreset",
   "themes", "todos", "toggleYolo", "toolsets", "TurnDraft", "turns", "updateMemory",
   "updateThemeColors", "upsertPreset", "view", "ViewName", "XuBrainStore",
@@ -291,7 +291,7 @@ const HOMES: Record<string, string[]> = {
     "renameSession", "saveConfig", "send",
     "session", "sessions", "setApprovalMode", "setAvatar", "setCwd",
     "setNotify", "setPersona", "setRules", "setView", "shiftSessionTab",
-    "state", "status", "stop", "switchSession", "testNotify", "toggleYolo",
+    "state", "status", "steerQueue", "stop", "switchSession", "testNotify", "toggleYolo",
     "turns", "view",
   ],
   "store/appearance.svelte.ts": [

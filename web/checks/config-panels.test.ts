@@ -71,7 +71,7 @@ group("panes-per-id", () => {
 
 // 2. MODULES tile ids and the CfgModule union are the same set.
 group("tiles-match-union", () => {
-  const modulesBlock = /const MODULES[\s\S]*?\]\);/.exec(configView)?.[0];
+  const modulesBlock = /const MODULES[\s\S]*?\] as CfgTab\[\]\)\.sort/.exec(configView)?.[0];
   assert.ok(modulesBlock, "ConfigView.svelte must declare the MODULES tile grid");
   const tileIds = [...modulesBlock.matchAll(/\{\s*id:\s*"([^"]+)"/g)].map((m) => m[1]);
   assert.deepEqual([...tileIds].sort(), [...unionIds].sort(),

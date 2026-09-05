@@ -237,6 +237,23 @@ def register(app: App) -> None:
             )
         return {"cancelled": cancelled}
 
+    @app.register("session.queue.steer")
+    async def session_queue_steer(params: dict[str, Any]) -> dict[str, Any]:
+        """Steer: interrupt the running turn and run a queued message now.
+
+        Promotes the message to the front of the queue, then stops the current
+        turn — the turn's chaining tail starts the steered message immediately
+        as a fresh turn. Returns ``{ steered: false }`` when the id was already
+        spliced into the live turn (it reached the model, nothing to steer)."""
+        sid = str(params.get("id") or "")
+        queued_id = str(params.get("queued_id") or "")
+        if not sid or app.sessions.get(sid) is None:
+            raise RpcError(-32002, "session not found", {"session_id": sid})
+        steered = app.agent.steer_queued(sid, queued_id)
+        if steered:
+            await app.agent.stop(sid)
+        return {"steered": steered}
+
     @app.register("session.stop")
     async def session_stop(params: dict[str, Any]) -> dict[str, Any]:
         await app.agent.stop(params["id"])

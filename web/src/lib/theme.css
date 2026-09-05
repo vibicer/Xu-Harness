@@ -925,8 +925,9 @@ body {
 .rules-presets-title small { color: var(--faint); font-size: 10px; font-family: var(--mono); }
 .rules-presets-empty { color: var(--faint); font-size: 11px; font-family: var(--mono); }
 .rules-presets-list { display: flex; flex-direction: column; gap: 5px; }
+.rules-preset-card-wrap { position: relative; }
 .rules-preset-card {
-  position: relative; display: flex; flex-direction: column; gap: 3px;
+  display: flex; flex-direction: column; gap: 3px;
   width: 100%; text-align: left; cursor: pointer;
   background: var(--surface); border: 1px solid var(--border);
   color: var(--text); padding: 6px 10px; font-family: inherit;
@@ -942,7 +943,7 @@ body {
 }
 .rules-preset-del {
   position: absolute; top: 2px; right: 8px; font-size: 15px; color: var(--faint);
-  line-height: 1; padding: 2px 4px; cursor: pointer;
+  line-height: 1; padding: 2px 4px; cursor: pointer; background: none; border: none;
 }
 .rules-preset-del:hover { color: var(--danger); }
 .rules-presets-add { display: flex; gap: 6px; margin-top: 4px; }
@@ -1131,7 +1132,6 @@ body {
 .row-exp .exp-caret { display: inline-flex; margin-right: 4px; }
 
 /* The commit bar. Sticky at the head of the pane, silent until something is
-   staged — nothing has been written to the brain while it is showing. */
    staged — nothing has been written to the brain while it is showing. */
 .cfg-bar { position: sticky; top: 0; z-index: 60; display: flex; align-items: center; gap: 12px; margin-bottom: 8px;
   background: var(--surface-2); border: 1px solid var(--border-strong); border-top: 0;
@@ -1565,11 +1565,16 @@ td .t { color: var(--text); }
 
 /* queued messages: waiting above the composer until the running turn picks
  * them up (server-side queue flushes at the next tool round) */
-.queued-preview { display: flex; flex-direction: column; gap: 4px; padding: 0 0 6px 0; }
+.queued-bar { display: flex; align-items: center; gap: 8px; padding: 0 2px; }
+.queued-bar-label { color: var(--amber, #ffd27c); font-weight: 700; font-size: 10px; letter-spacing: 2px; flex: none; }
+
 .queued-msg { display: flex; align-items: center; gap: 10px; border: 1px dashed var(--border-strong, #2a3854); padding: 4px 10px; font-size: 12px; color: var(--fg-dim, #8ea2c0); }
 .queued-tag { color: var(--amber, #ffd27c); font-weight: 700; font-size: 10px; letter-spacing: 2px; flex: none; }
 .queued-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .queued-thumb { width: 28px; height: 28px; object-fit: cover; border: 1px solid var(--border-strong, #2a3854); flex: none; }
+.queued-steer { flex: none; margin-left: auto; display: grid; place-items: center; border: 0; background: transparent; color: var(--faint, #6f5f96); line-height: 1; padding: 2px 5px; cursor: pointer; }
+.queued-steer:hover:not(:disabled) { color: var(--magenta, #e56ac1); }
+.queued-steer:disabled { opacity: .4; cursor: default; }
 .queued-x { flex: none; margin-left: auto; display: grid; place-items: center; border: 0; background: transparent; color: var(--faint, #6f5f96); line-height: 1; padding: 2px 5px; cursor: pointer; }
 .queued-x:hover:not(:disabled) { color: var(--danger, #ff5c6c); }
 .queued-x:disabled { opacity: .4; cursor: default; }

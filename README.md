@@ -8,7 +8,7 @@
 [![Python](https://img.shields.io/badge/Python-3.12+-3776AB?style=for-the-badge&logo=python&logoColor=white)](https://python.org)
 [![Svelte](https://img.shields.io/badge/Svelte-5-FF3E00?style=for-the-badge&logo=svelte&logoColor=white)](https://svelte.dev)
 
-**Xu is a personal AI agent harness: a Python brain daemon that runs the agent loop, plus a Svelte 5 web shell — the only UX surface. One localhost WebSocket between the two. Simple and very basic.**
+**Xu is a personal AI agent harness: a Python brain daemon that runs the agent loop, plus a Svelte 5 web shell — the only UX surface. One localhost WebSocket between the two. Simple and very basic for agentic work or coding.**
 
 </div>
 
@@ -25,11 +25,11 @@ npm/bun once to build the web UI on first start. [uv](https://docs.astral.sh/uv/
 is optional; the launcher falls back to stdlib `venv` + `pip` without it.
 
 ```bash
-git clone https://github.com/vibicer/Xu-Harness.git
-cd Xu-Harness
+git clone https://github.com/vibicer/Xu.git
+cd Xu
 python xu.py start    # creates brain venv, builds web UI, opens http://localhost:1421
 ```
 
-Other commands: `python xu.py stop | restart | status | logs | test | update` — `xu stop | restart | status | logs | test | update`
+Other commands: `python xu.py stop | restart | status | logs | test`. `xu start | stop | restart | status | logs | test`
 
 

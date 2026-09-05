@@ -8,6 +8,7 @@
   import GitChip from "../GitChip.svelte";
   import PluginSlot from "../PluginSlot.svelte";
   import Icon from "../Icon.svelte";
+  import QueuedTurns from "./QueuedTurns.svelte";
 
   // ---- composer send pipeline ----
   let input = $state("");
@@ -100,6 +101,7 @@ el.style.height = el.scrollHeight + "px";
 </script>
 
 <div id="composer-wrap">
+  <QueuedTurns />
   {#if brain.todos.phases.length}
     <!-- Collapsed by default: a small badge, not a full-width bar. The badge
          shows done/total and turns amber while an item is in progress. -->
