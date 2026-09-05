@@ -1,0 +1,3 @@
+# cmd.exe is only reliably happy with CRLF batch files, and a Windows clone
+# with core.autocrlf=false would otherwise get the LF version committed here.
+*.cmd text eol=crlf

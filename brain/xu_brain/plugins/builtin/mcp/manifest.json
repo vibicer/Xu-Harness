@@ -1,0 +1,31 @@
+{
+  "name": "mcp",
+  "version": "1.2.1",
+  "description": "Model Context Protocol client \u2014 manage stdio MCP servers in Config \u2192 MCP and expose their tools to the agent.",
+  "provides": [
+    "tool",
+    "rpc",
+    "panel"
+  ],
+  "ui": {
+    "module": "ui.js",
+    "element": "xu-mcp-config",
+    "mount": "config",
+    "label": "MCP",
+    "icon": "plug"
+  },
+  "settings": [
+    {
+      "key": "timeout_ms",
+      "type": "integer",
+      "default": 30000,
+      "label": "Per-request timeout (ms, 0 = no limit)"
+    },
+    {
+      "key": "trusted_servers",
+      "type": "list",
+      "default": [],
+      "label": "Servers whose tools run without an approval prompt"
+    }
+  ]
+}

@@ -1,0 +1,731 @@
+/* SIMPLE layout — sidebar + a chat-first workspace (theme: example11.html).
+   Neutrals, accent and status colors read the theme variables defined by
+   .theme-simple in theme.css, so Config → Themes recolors this layout.
+
+   Shape, and why: the workspace is NOT a dashboard of cards and NOT the default
+   layout's fixed chat|state split. `.simple-main` is a viewport-height flex
+   column that never scrolls; chat owns the remaining space and scrolls itself,
+   so the composer stays on the bottom edge. Agent state is a horizontal chip
+   strip (always readable) plus an opt-in rail (`.simple-rail`).
+   Approvals are rendered by Chat.svelte; the topbar only carries a jump chip.
+
+   IMPORTANT — no `:global()` in this file. It is a plain stylesheet imported by
+   Layout.svelte (the `simple` folder), not a Svelte <style> block, so `:global()` is never
+   compiled away: it ships literally and the browser discards the whole rule.
+   Chat.svelte and AgentState.svelte are shared with the default layout, so this
+   file re-skins their markup from the outside, scoped under `.simple-shell`.
+   This stylesheet is bundled BEFORE theme.css, so every override here must also
+   out-specify theme.css — hence the `.simple-shell` prefix on all of them. */
+
+.simple-shell {
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  /* #app is a flex row, so a bare `height:100%` box shrinks to its content
+     width and leaves the viewport's right edge empty — claim the whole row. */
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  display: flex;
+  /* Dark neutrals: opt native scrollbars and form controls into the dark palette. */
+  color-scheme: dark;
+  background: var(--bg);
+  color: var(--text);
+}
+
+.simple-shell *, .simple-shell *::before, .simple-shell *::after { box-sizing: border-box; }
+.simple-shell button { font: inherit; }
+.simple-shell button:focus-visible, .simple-shell a:focus-visible, .simple-shell [tabindex]:focus-visible {
+  outline: 2px solid var(--cyan);
+  outline-offset: 3px;
+}
+.simple-shell h1, .simple-shell h2, .simple-shell p { margin-top: 0; }
+
+.simple-sidebar {
+  flex: 0 0 248px;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  padding: 28px 16px 20px;
+  background: var(--bg-2);
+  border-right: 1px solid var(--border);
+}
+.simple-brand {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+  align-self: flex-start;
+  padding: 0 12px 34px;
+  font-size: 29px;
+  line-height: 1;
+  font-weight: 800;
+  letter-spacing: -.08em;
+}
+.simple-brand span { color: var(--cyan); }
+.simple-brand .simple-brand-avatar {
+  width: 40px; height: 40px; border-radius: 50%;
+  object-fit: cover; display: block;
+  border: 1px solid var(--border-strong);
+}
+.simple-nav { display: grid; gap: 6px; }
+/* Fixed box, not min-height: the nav glyphs (⌂ ▣ ⚙ ⇄ ☷) have wildly different
+   ascent/descent, so a content-driven height makes every row a different size.
+   line-height:1 on the icon cell keeps its metrics out of the row box too. */
+.simple-nav button {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 13px;
+  box-sizing: border-box;
+  height: 44px;
+  padding: 0 13px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  color: var(--dim);
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+  font-size: 14px;
+  line-height: 1;
+  transition: background .15s ease, color .15s ease, border-color .15s ease;
+}
+.simple-nav button:hover { color: var(--text); background: var(--surface-2); }
+.simple-nav button.active, .simple-nav button[aria-current="page"] {
+  color: var(--text);
+  background: var(--surface-2);
+  border-color: var(--border-strong);
+}
+.simple-nav button > span:first-child {
+  flex: 0 0 20px;
+  display: grid;
+  place-items: center;
+  height: 20px;
+  color: var(--cyan);
+  /* holds a Lucide icon (src/lib/icons.ts), sized by the call site */
+}
+.simple-nav button > span:last-child {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* Topbar channel indicators: brain link. Dot + label per
+   channel; `.offline` on the item turns the dot red and dims the label. */
+.simple-links { display: flex; align-items: center; gap: 10px; color: var(--dim); font-size: 12px; white-space: nowrap; }
+.simple-links span { display: inline-flex; align-items: center; gap: 5px; }
+.simple-links i { width: 7px; height: 7px; border-radius: 50%; background: var(--ok); }
+/* The `.offline` class sits on the parent <span>, not the <i> dot, so the
+   dot must be reached through the span (`span.offline i`). The older
+   `i.offline` selector presumed the class was on the dot and never matched. */
+.simple-links span.offline i { background: var(--danger); }
+/* RAM / SESS readouts in the topbar — same info the default layout's status
+   bar shows, styled to match `.simple-links` (muted, small, no wrap). */
+.simple-meta { display: inline-flex; align-items: center; gap: 5px; color: var(--dim); font-size: 12px; white-space: nowrap; }
+/* Fixed-height column: the header and tabs are static rows; only the
+   view below them scrolls. Nothing here may use overflow-y:auto. */
+.simple-main {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  padding: 30px clamp(22px, 3.4vw, 52px) 26px;
+  /* clip, not hidden: hidden is still a scroll container, so focusing a
+     control inside could programmatically drag this whole column sideways.
+     clip forbids scrolling entirely while clipping the same way. */
+  overflow: clip;
+}
+.simple-topbar { flex: 0 0 auto; display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; margin-bottom: 20px; }
+.simple-topbar h1 { margin-bottom: 7px; font-size: 26px; letter-spacing: -.03em; }
+.simple-topbar-right { display: flex; align-items: center; gap: 12px; margin-top: 8px; }
+.simple-approval-chip {
+  display: inline-flex; align-items: center; gap: 6px;
+  min-height: 32px; padding: 0 12px;
+  border: 1px solid var(--amber); border-radius: 99px;
+  color: var(--amber); background: color-mix(in srgb, var(--amber) 14%, transparent);
+  cursor: pointer; font-size: 12px; font-weight: 650; white-space: nowrap;
+}
+.simple-approval-chip:hover { background: color-mix(in srgb, var(--amber) 24%, transparent); }
+/* Live sub-agent "working" chip — mirrors the approval chip's pill, but cyan
+   (active/working tone) instead of amber (warning). Pulsing dot flags a run. */
+.simple-sub-chip {
+  display: inline-flex; align-items: center; gap: 6px;
+  min-height: 32px; padding: 0 12px;
+  border: 1px solid var(--cyan); border-radius: 99px;
+  color: var(--cyan); background: color-mix(in srgb, var(--cyan) 14%, transparent);
+  cursor: pointer; font-size: 12px; font-weight: 650; white-space: nowrap;
+}
+.simple-sub-chip:hover { background: color-mix(in srgb, var(--cyan) 24%, transparent); }
+.simple-sub-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--cyan); animation: simpleTabPulse 1s ease-in-out infinite; }
+
+.simple-card {
+  min-width: 0;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--surface);
+  box-shadow: 0 16px 40px rgb(0 0 0 / 25%);
+}
+/* Open-chat strip: pill tabs on the page background, not framed cards.
+   Fixed box, fixed tab width, and why: a content-sized strip re-measured on
+   every title change — a long session title made one tab 4x the width of its
+   neighbours, and the scrollbar appearing added rows' worth of height, which
+   moved the chat card and composer down. `flex: 0 0 46px` + `overflow-y:
+   hidden` pins the row; the scrollbar eats into the row instead of growing it. */
+.simple-tabs {
+  flex: 0 0 46px;
+  height: 46px;
+  display: flex; align-items: center; gap: 6px;
+  margin-bottom: 14px;
+  overflow-x: auto; overflow-y: hidden; scrollbar-width: thin;
+}
+.simple-tab {
+  /* Every chat gets the same tab, whatever it is called. */
+  flex: 0 0 176px;
+  display: inline-flex; align-items: center; min-width: 0;
+  border: 1px solid var(--border); border-radius: 9px;
+  background: var(--surface);
+}
+.simple-tab.active { border-color: var(--cyan); background: var(--surface-2); }
+/* drag-to-reorder: the strip reorders live under the pointer (animate:flip does
+   the sliding), so the only state left to draw is the tab being carried. */
+.simple-tab {
+  position: relative; cursor: grab;
+  transition: opacity .16s ease, transform .16s ease;
+}
+.simple-tab.dragging {
+  opacity: .5; cursor: grabbing; transform: scale(.97);
+  outline: 2px dashed var(--cyan); outline-offset: -2px;
+}
+@media (prefers-reduced-motion: reduce) {
+  .simple-tab { transition: none; }
+  .simple-tab.dragging { transform: none; }
+}
+.simple-tab-name, .simple-tab-close, .simple-tab-add {
+  min-height: 32px; border: 0; background: transparent;
+  color: var(--dim); cursor: pointer; font-size: 12.5px;
+}
+.simple-tab-name {
+  flex: 1; min-width: 0;
+  display: inline-flex; align-items: center; gap: 7px;
+  padding: 0 4px 0 11px; border-radius: 8px 0 0 8px;
+}
+.simple-tab-name > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.simple-tab.active .simple-tab-name { color: var(--text); }
+.simple-tab-busy {
+  flex: 0 0 6px; width: 6px; height: 6px; border-radius: 50%;
+  background: var(--cyan); animation: simpleTabPulse 1s ease-in-out infinite;
+}
+@keyframes simpleTabPulse { 0%, 100% { opacity: 1; } 50% { opacity: .3; } }
+.simple-tab-close { flex: 0 0 26px; width: 26px; display: grid; place-items: center; border-radius: 0 8px 8px 0; color: var(--faint); }
+.simple-tab-close:hover { color: var(--danger); }
+.simple-tab-add { flex: 0 0 32px; width: 32px; display: grid; place-items: center; border: 1px dashed var(--border); border-radius: 8px; color: var(--cyan); }
+.simple-tab-add:hover { border-color: var(--cyan); color: var(--cyan); }
+
+/* chat | optional rail. min-height:0 is what lets the children scroll. */
+.simple-work { flex: 1; min-height: 0; display: flex; gap: 16px; }
+.simple-chat-card { flex: 1; min-width: 0; display: flex; flex-direction: column; overflow: hidden; }
+.simple-blank { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; padding: 32px; text-align: center; }
+.simple-blank h2 { margin: 0; font-size: 20px; }
+.simple-blank .simple-empty { max-width: 380px; margin: 0; }
+
+/* `min-width: 0` is load-bearing: without it a flex item cannot shrink below
+   its min-content width, so one long skill id or cwd path in AgentState makes
+   the rail wider than 316px and shoves the layout sideways. */
+.simple-rail { flex: 0 0 316px; min-width: 0; display: flex; flex-direction: column; overflow: hidden; }
+.simple-rail-head { flex: 0 0 auto; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 15px 16px 13px; border-bottom: 1px solid var(--border); }
+.simple-rail-head h2 { margin: 0; font-size: 13px; font-weight: 650; letter-spacing: .04em; text-transform: uppercase; color: var(--dim); }
+
+/* Sessions / Config / Logs keep the page-scroll they were built for. */
+.simple-view { flex: 1; min-height: 0; overflow-y: auto; }
+
+.simple-muted, .simple-empty { color: var(--dim); }
+.simple-muted { font-size: 12px; }
+.simple-empty { margin: 0; font-size: 13px; }
+.simple-primary {
+  display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+  border-radius: 9px; min-height: 40px; padding: 0 16px;
+  border: 1px solid transparent; cursor: pointer; font-weight: 650;
+  color: #101821; background: var(--cyan);
+}
+.simple-primary:hover { filter: brightness(1.1); }
+.simple-link { border: 0; padding: 4px; color: var(--cyan); background: transparent; cursor: pointer; font-size: 12px; }
+.simple-link:hover { color: color-mix(in srgb, var(--cyan) 75%, white); text-decoration: underline; }
+
+/* ==================================================================
+   RE-SKIN: Chat.svelte and AgentState.svelte
+   Both are authored for the default pixel/arcane layout — VT323 CRT text,
+   2px borders, hard `3px 3px 0` offset shadows, clipped corners, uppercase
+   pixel labels. Simple is a calm document UI: one typeface, 1px hairlines,
+   soft radii, no offset shadows. Only code keeps a monospace face.
+   ================================================================== */
+
+/* One typeface everywhere inside the two shared components… */
+.simple-shell #chat-main, .simple-shell #chat-main *,
+.simple-shell #astate, .simple-shell #astate * { font-family: inherit; }
+/* …except anything that is literally code or a machine value. */
+.simple-shell #chat-main code, .simple-shell #chat-main pre,
+.simple-shell #chat-main .tl-head, .simple-shell #chat-main .tl-body,
+.simple-shell #chat-main .cmd, .simple-shell #chat-main .md-table,
+.simple-shell #astate code, .simple-shell #astate pre,
+.simple-shell #astate #cwd-path, .simple-shell #astate .mpick-val,
+.simple-shell #astate .rules-input, .simple-shell #astate .td-name {
+  font-family: var(--mono);
+}
+
+/* Kill every hard offset shadow and clipped corner in one pass. */
+.simple-shell #chat-main *, .simple-shell #astate *,
+.simple-shell .sub-panel, .simple-shell .dir-modal-panel { box-shadow: none; clip-path: none; }
+/* …and the pixel-shove on :active, which reads as a game button. */
+.simple-shell #chat-main *:active, .simple-shell #astate *:active { transform: none; }
+
+/* ---- chat surface ---- */
+.simple-shell #chat-main { flex: 1; min-height: 0; }
+.simple-shell #messages { padding: 20px 22px 8px; scrollbar-width: thin; }
+.simple-shell #msg-col { max-width: 820px; gap: 22px; }
+
+/* Bubbles: assistant is bare prose on the card (no frame at all), user is a
+   single soft accent-tinted bubble. This is the biggest visual break from the
+   default layout, where both sides are framed boxes with accent left rules. */
+.simple-shell .msg .box {
+  border: 0; border-radius: 12px; background: transparent;
+  padding: 0; max-width: none; line-height: 1.65;
+}
+.simple-shell .msg.assistant .box { border-left: 0; }
+.simple-shell .msg.user { max-width: 100%; margin-left: 0; }
+.simple-shell .msg.user .box {
+  max-width: 76%; margin-left: auto;
+  padding: 11px 15px; border: 1px solid var(--border);
+  border-left: 1px solid var(--border);
+  border-radius: 14px 14px 4px 14px;
+  background: color-mix(in srgb, var(--cyan) 9%, var(--surface-2));
+}
+.simple-shell .msg .text { font-size: 14.5px; line-height: 1.65; }
+.simple-shell .msg .text code, .simple-shell .msg .text.md code.ic {
+  border: 0; border-radius: 5px; padding: 1px 6px;
+  background: var(--surface-2); color: var(--amber); font-size: 12.5px;
+}
+.simple-shell .msg .box pre, .simple-shell .msg .text.md pre.code {
+  border: 1px solid var(--border); border-left: 1px solid var(--border);
+  border-radius: 10px; background: var(--bg); color: var(--text);
+  padding: 12px 14px;
+}
+.simple-shell .msg .md-h { color: var(--text); font-weight: 700; letter-spacing: -.01em; }
+.simple-shell .msg .text.md strong { color: var(--text); }
+.simple-shell .msg .text.md em { color: var(--dim); }
+.simple-shell .msg .text.md a { color: var(--cyan); text-decoration: underline; text-underline-offset: 2px; }
+.simple-shell .msg .text.md blockquote { border-left: 2px solid var(--border-strong); background: transparent; color: var(--dim); }
+.simple-shell .msg .text.md li::marker { color: var(--faint); }
+.simple-shell .msg .text.md .md-table-wrap { border: 1px solid var(--border); border-radius: 10px; }
+.simple-shell .msg .text.md .md-table th {
+  border-bottom: 1px solid var(--border); background: var(--surface-2);
+  color: var(--dim); font-size: 11px; font-weight: 650; letter-spacing: .04em; text-transform: uppercase;
+}
+.simple-shell .copy {
+  position: absolute; bottom: 6px; right: 6px; opacity: 0;
+  padding: 3px 8px; border-radius: 6px;
+  border: 1px solid var(--border); background: var(--surface-2); color: var(--faint); font-size: 11px;
+  transition: opacity .12s, color .12s, border-color .12s;
+}
+.simple-shell .msg .box:hover .copy { opacity: 1; }
+.simple-shell .copy:hover { color: var(--cyan); border-color: var(--cyan); }
+ /* No LED comet ring while responding — a quiet "Processing…" line at the
+    foot of the live message instead. Chat.svelte already toggles `working`
+    on .msg.assistant for the whole turn, so the line stays for the full
+    stream and clears when the turn ends. Pure CSS, no JS or HTML change. */
+ .simple-shell .msg.assistant.working .box::before { display: none; }
+ .simple-shell .msg.assistant.working .stream-idle { display: none; }
+ .simple-shell .stream-idle, .simple-shell .turn-notice { animation: none; color: var(--dim); }
+ .simple-shell .idle-dot { animation: none; box-shadow: none; background: var(--cyan); }
+ .simple-shell .msg .box .interrupted { color: var(--amber); font-size: 12px; }
+
+ /* Processing line: label + three dots breathing at the same 1s cadence as
+    the tab busy dot (reuses simpleTabPulse), so every simple indicator
+    pulses in one quiet rhythm. */
+ .simple-shell .msg.assistant.working .box::after {
+   content: "Processing\00A0\00A0• • •";
+   display: block;
+   margin-top: 12px;
+   font-size: 12px; font-weight: 600; letter-spacing: .04em;
+   color: var(--dim);
+   animation: simpleTabPulse 1s ease-in-out infinite;
+ }
+
+/* Tool calls and reasoning: quiet indented rules, not framed terminal logs.
+   ToolChip renders shape-specific panes (terminal / note / search); Simple
+   keeps them but softens them — hairlines, soft radii, near-neutral surfaces. */
+.simple-shell .toollog {
+  border-left: 2px solid var(--border); border-radius: 0;
+  margin: 12px 0 12px 2px; padding: 2px 0 2px 12px; max-width: none;
+  /* panes stay in the document palette rather than going CRT-black */
+  --chip-term: #0d1117;
+  --chip-term-text: var(--text);
+  --chip-note: var(--surface-2);
+  --chip-rule: var(--border);
+}
+.simple-shell .toollog.run { border-left-color: var(--cyan); }
+.simple-shell .toollog.err { border-left-color: var(--danger); }
+.simple-shell .toollog.shape-terminal { border-left-color: var(--ok); }
+.simple-shell .toollog.shape-terminal.err { border-left-color: var(--danger); }
+.simple-shell .toollog.shape-note { border-left-color: var(--amber); }
+.simple-shell .toollog.shape-note.ro { border-left-color: var(--border); }
+.simple-shell .toollog .tl-head { font-size: 12px; }
+.simple-shell .toollog .tl-tool { color: var(--text); font-weight: 600; }
+.simple-shell .toollog .tl-what { color: var(--dim); font-weight: 400; }
+.simple-shell .toollog .tl-args, .simple-shell .toollog .tl-dir { color: var(--dim); }
+.simple-shell .toollog .tl-state { border-radius: 5px; font-size: 10px; letter-spacing: .04em; text-transform: uppercase; }
+.simple-shell .toollog .tl-body,
+.simple-shell .toollog .tl-term,
+.simple-shell .toollog .tl-note-page {
+  border: 1px solid var(--border); border-left: 1px solid var(--border);
+  border-radius: 8px; background: var(--bg); font-size: 11.5px;
+}
+.simple-shell .toollog .tl-note-tab { border-radius: 8px 8px 0 0; margin-bottom: -1px; }
+.simple-shell .toollog .tl-note-page { border-top-left-radius: 0; }
+.simple-shell .toollog .tl-hits { border-radius: 999px; }
+.simple-shell .tl-sub { border-radius: 6px; font-size: 10px; padding: 2px 7px; }
+.simple-shell .think {
+  border: 1px solid var(--border); border-radius: 10px;
+  background: var(--surface-2); max-width: none; opacity: 1;
+}
+.simple-shell .think .tk-head { border-bottom: 1px solid var(--border); background: transparent; font-size: 12px; }
+.simple-shell .think .tk-tool, .simple-shell .think.run .tk-tool { color: var(--dim); font-weight: 600; animation: none; text-shadow: none; }
+.simple-shell .think .tk-icon { color: var(--faint); }
+.simple-shell .think .tk-body { color: var(--dim); font-style: normal; font-size: 13px; }
+.simple-shell .err-block { border: 1px solid var(--danger); border-radius: 10px; max-width: none; }
+.simple-shell .err-block .err-head {
+  border-bottom: 1px solid var(--danger); background: transparent;
+  font-size: 11px; font-weight: 650; letter-spacing: .05em; text-transform: uppercase;
+}
+.simple-shell .compaction-bar .label { color: var(--faint); font-size: 11px; }
+.simple-shell .compaction-body { border-left: 2px solid var(--border); max-width: none; }
+
+/* Approvals: a calm amber card, not a game dialogue box with a "! !" tab. */
+.simple-shell .approval {
+  border: 1px solid var(--amber); border-radius: 12px;
+  background: color-mix(in srgb, var(--amber) 7%, var(--surface));
+  padding: 15px 17px; max-width: 620px;
+}
+.simple-shell .approval::before { display: none; }
+.simple-shell .approval .title { color: var(--amber); font-size: 13px; font-weight: 700; }
+.simple-shell .approval-summary { grid-template-columns: 116px minmax(0, 1fr); font-size: 13px; }
+.simple-shell .approval-label { color: var(--dim); font-size: 10px; font-weight: 650; }
+.simple-shell .approval .cmd { border: 1px solid var(--border); border-radius: 8px; background: var(--bg); }
+.simple-shell .approval .why { font-size: 13px; }
+.simple-shell .approval.done { border-color: var(--border); background: var(--surface); }
+.simple-shell .ask-q { border-left: 2px solid var(--cyan); border-radius: 0 8px 8px 0; font-size: 13.5px; }
+.simple-shell .ask-opt {
+  border: 1px solid var(--border); border-radius: 10px;
+  background: var(--surface-2); font-size: 13.5px;
+}
+.simple-shell .ask-opt:hover { border-color: var(--cyan); background: var(--surface-3); }
+.simple-shell .ask-opt .ask-idx {
+  border-radius: 6px; background: var(--surface-3); color: var(--dim);
+  font-size: 11px; font-weight: 650;
+}
+.simple-shell .ask-label { color: var(--faint); font-size: 11px; font-weight: 650; }
+.simple-shell .askbox input, .simple-shell .rules-presets-name, .simple-shell .dir-jump input {
+  border: 1px solid var(--border); border-radius: 9px; background: var(--surface-2);
+  color: var(--text); padding: 9px 11px; font-size: 13.5px;
+}
+.simple-shell .askbox input:focus, .simple-shell .rules-input:focus { outline: none; border-color: var(--cyan); }
+
+/* Shared buttons (approvals, cwd picker, rules editor). */
+.simple-shell #chat-main .btn, .simple-shell #astate .btn, .simple-shell .dir-actions .btn {
+  border: 1px solid var(--border-strong); border-radius: 9px;
+  padding: 8px 15px; font-size: 13px; font-weight: 650;
+  letter-spacing: 0; text-transform: none;
+  background: var(--surface-2); color: var(--text);
+}
+.simple-shell #chat-main .btn.primary, .simple-shell #astate .btn.primary, .simple-shell .dir-actions .btn.primary {
+  border-color: var(--cyan); background: var(--cyan); color: #101821;
+}
+.simple-shell #chat-main .btn.primary:hover, .simple-shell #astate .btn.primary:hover { filter: brightness(1.08); background: var(--cyan); }
+.simple-shell #chat-main .btn.danger, .simple-shell #astate .btn.danger {
+  border-color: color-mix(in srgb, var(--danger) 55%, transparent);
+  background: transparent; color: var(--danger);
+}
+.simple-shell #chat-main .btn.sm, .simple-shell #astate .btn.sm { padding: 5px 10px; font-size: 11px; }
+
+/* Composer: a rounded input bar, no `>_` terminal prompt, round send button. */
+.simple-shell #composer { padding: 12px 22px 16px; }
+.simple-shell #composer-box {
+  max-width: 820px;
+  border: 1px solid var(--border); border-radius: 14px;
+  background: var(--surface-2); padding: 9px 10px 9px 15px; gap: 10px;
+}
+.simple-shell #composer-box:focus-within { border-color: var(--cyan); }
+.simple-shell #composer-box .prompt { display: none; }
+.simple-shell #composer-input { font-size: 14.5px; line-height: 1.5; caret-color: var(--cyan); }
+.simple-shell #send-btn, .simple-shell #stop-btn {
+  width: 36px; height: 36px; border-radius: 50%; border: 0;
+  display: flex; align-items: center; justify-content: center; font-size: 14px;
+}
+.simple-shell #send-btn { background: var(--cyan); color: #101821; }
+.simple-shell #stop-btn { background: var(--danger); color: #101821; }
+.simple-shell #att-btn {
+  width: 34px; height: 34px; border-radius: 50%;
+  border: 1px solid var(--border); background: transparent; color: var(--dim);
+}
+.simple-shell #att-btn:hover { border-color: var(--cyan); color: var(--cyan); }
+.simple-shell #composer-foot { max-width: 820px; margin: 9px auto 0; gap: 7px; font-size: 11px; }
+.simple-shell #composer-foot .foot-group, .simple-shell #composer-foot .foot-status {
+  border: 1px solid var(--border); border-radius: 99px; background: transparent; padding: 3px 11px;
+}
+.simple-shell #composer-foot .foot-label { font-size: 10px; font-weight: 650; letter-spacing: .06em; }
+.simple-shell #composer-foot .yolo-toggle { border: 0; padding: 0; color: var(--dim); font-size: 11px; font-weight: 650; }
+.simple-shell #composer-foot .yolo-toggle.on { border: 0; background: transparent; color: var(--amber); }
+.simple-shell #composer-foot .mode-indicator { width: 6px; height: 6px; border-radius: 50%; border: 1px solid currentColor; }
+.simple-shell .att-preview { max-width: 820px; padding: 0 22px; }
+.simple-shell .att-item { border: 1px solid var(--border); border-radius: 10px; overflow: hidden; }
+.simple-shell .att-x { border-radius: 0 0 0 8px; }
+.simple-shell .queued-msg { border: 1px dashed var(--border-strong); border-radius: 9px; color: var(--dim); padding: 5px 11px; }
+.simple-shell .queued-tag { color: var(--amber); font-size: 10px; font-weight: 650; letter-spacing: .1em; }
+.simple-shell .queued-x { flex: none; margin-left: auto; border: 0; background: transparent; color: var(--dim); font-size: 11px; line-height: 1; padding: 2px 5px; cursor: pointer; }
+.simple-shell .queued-x:hover:not(:disabled) { color: var(--danger); }
+.simple-shell .queued-x:disabled { opacity: .4; cursor: default; }
+
+/* Task badge above the composer. */
+.simple-shell #todo-strip { right: 22px; }
+.simple-shell #todo-strip.open { border: 1px solid var(--border); border-radius: 12px; background: var(--surface); overflow: hidden; }
+.simple-shell #todo-toggle { border: 1px solid var(--border); border-radius: 99px; background: var(--surface); color: var(--dim); font-size: 11px; padding: 4px 10px; }
+.simple-shell #todo-strip.open #todo-toggle { border: 0; border-radius: 0; font-size: 11px; font-weight: 650; }
+.simple-shell .todo-row { font-size: 13px; }
+.simple-shell .todo-mark { color: var(--faint); }
+
+/* Sub-agent run modal (delegate chip). */
+.simple-shell .sub-modal, .simple-shell .dir-modal { background: rgb(0 0 0 / 62%); }
+.simple-shell .sub-panel, .simple-shell .dir-modal-panel {
+  border: 1px solid var(--border-strong); border-radius: 14px;
+  background: var(--surface); filter: none; overflow: hidden;
+}
+.simple-shell .sub-head, .simple-shell .dir-head { border-bottom: 1px solid var(--border); }
+.simple-shell .sub-title, .simple-shell .dir-head { color: var(--text); font-size: 13px; font-weight: 650; letter-spacing: 0; }
+.simple-shell .sub-badge { border-radius: 99px; font-size: 10px; font-weight: 650; padding: 2px 9px; }
+.simple-shell .sub-label { color: var(--dim); font-size: 10px; font-weight: 650; letter-spacing: .06em; }
+.simple-shell .sub-prompt, .simple-shell .sub-result, .simple-shell .sub-text {
+  border-left: 2px solid var(--border-strong); border-radius: 0 8px 8px 0; font-size: 13px;
+}
+.simple-shell .dir-item { border-radius: 8px; font-size: 13px; }
+.simple-shell .dir-item:hover { background: var(--surface-2); color: var(--cyan); }
+.simple-shell .dir-actions { border-top: 1px solid var(--border); }
+
+/* ---- agent state rail ---- */
+.simple-shell #astate {
+  flex: 1; min-width: 0; min-height: 0; width: auto;
+  border-left: 0; background: transparent;
+}
+/* Same reason as `.simple-rail`: every nested flex/scroll box in AgentState
+   needs min-width:0 or a long unbroken value (skill id, model name, path)
+   pushes it wide instead of ellipsing or wrapping. */
+.simple-shell #astate-status, .simple-shell #astate-body,
+.simple-shell .stpane, .simple-shell .strow,
+.simple-shell .cu-row, .simple-shell .cwd-row, .simple-shell .model-row { min-width: 0; }
+/* Long ids and descriptions wrap instead of widening the rail. */
+.simple-shell .strow .t, .simple-shell .td-desc, .simple-shell .toolrow .n { overflow-wrap: anywhere; }
+/* The rail header already titles the panel. */
+.simple-shell #astate-head { display: none; }
+.simple-shell #astate-status { padding: 14px 16px; border-bottom: 1px solid var(--border); gap: 12px; }
+/* Context: one continuous track instead of ten pixel cells. */
+.simple-shell .cu-row, .simple-shell .cwd-row, .simple-shell .model-row { font-size: 12px; }
+.simple-shell .cu-row .l, .simple-shell .cwd-row .l, .simple-shell .model-row .l {
+  min-width: 52px; color: var(--dim); font-size: 10px; font-weight: 650; letter-spacing: .06em; text-transform: uppercase;
+}
+.simple-shell .cu-bar { flex: 1; gap: 0; height: 6px; border-radius: 99px; background: var(--surface-3); overflow: hidden; }
+.simple-shell .cu { flex: 1; width: auto; height: 100%; border: 0; background: transparent; }
+.simple-shell .cu.on { background: var(--cyan); }
+.simple-shell .cu.pend { background: var(--amber); }
+.simple-shell .cu-row .pct { color: var(--text); font-size: 12px; font-weight: 650; }
+.simple-shell .cu-row .pct.pend, .simple-shell .cu-row .pct.amber { color: var(--amber); }
+.simple-shell .compress-btn { border-radius: 8px; padding: 4px 9px; font-size: 11px; }
+.simple-shell #cwd-path { font-size: 12px; }
+.simple-shell .cd-btn, .simple-shell .mpick-btn {
+  border: 1px solid var(--border); border-radius: 9px;
+  background: var(--surface-2); color: var(--text); font-size: 12px; padding: 6px 10px;
+}
+.simple-shell .cd-btn:hover, .simple-shell .mpick-btn:hover, .simple-shell .mpick-btn[aria-expanded="true"] { border-color: var(--cyan); color: var(--text); }
+.simple-shell .mpick-btn:disabled { opacity: .55; cursor: not-allowed; color: var(--faint); }
+.simple-shell .mpick-btn:disabled:hover { border-color: var(--border); }
+.simple-shell .mpick-menu {
+  border: 1px solid var(--border-strong); border-radius: 10px;
+  background: var(--surface); filter: none; overflow: hidden auto;
+}
+.simple-shell .mpick-opt { border-bottom: 1px solid var(--border); font-size: 12px; padding: 8px 11px; }
+.simple-shell .mpick-opt.sel { color: var(--cyan); }
+/* Tabs: a segmented control, not three pixel buttons with hard dividers. */
+.simple-shell #astate-tabs {
+  margin: 12px 14px 0;
+  border: 1px solid var(--border); border-bottom: 1px solid var(--border);
+  border-radius: 10px; background: var(--surface-2);
+  padding: 3px; gap: 3px;
+}
+.simple-shell .stab {
+  border: 0; border-right: 0; border-radius: 7px;
+  padding: 7px 4px; background: transparent; color: var(--dim);
+  font-size: 11px; font-weight: 650; letter-spacing: .04em;
+}
+.simple-shell .stab:hover { color: var(--text); }
+.simple-shell .stab.active { background: var(--surface); color: var(--text); }
+/* gutter reserves the scrollbar column so pane switches don't reflow;
+   overflow-x clip stops any focus-scroll from panning the rail. */
+.simple-shell #astate-body { padding: 14px; scrollbar-width: thin; scrollbar-gutter: stable; overflow-x: clip; }
+.simple-shell .strow {
+  border: 1px solid var(--border); border-radius: 10px;
+  background: var(--surface-2); padding: 10px 12px;
+}
+.simple-shell .strow .t { font-size: 13px; line-height: 1.55; }
+.simple-shell .strow .edit { border-radius: 6px; color: var(--faint); font-size: 12px; }
+.simple-shell .strow .edit:hover { color: var(--cyan); border-color: var(--border); }
+.simple-shell .badge {
+  border: 1px solid var(--border-strong); border-radius: 99px;
+  padding: 2px 9px; font-size: 10px; font-weight: 650; letter-spacing: .03em;
+}
+.simple-shell .rules-input {
+  border: 1px solid var(--border); border-radius: 10px;
+  background: var(--surface-2); padding: 10px; font-size: 12px;
+border: 1px solid var(--border); border-radius: 10px;
+background: var(--surface-2); padding: 10px; font-size: 12px;
+}
+.simple-shell .rules-input:disabled { opacity: .55; background: var(--surface); color: var(--faint); cursor: not-allowed; }
+.simple-shell .stfoot { color: var(--faint); font-size: 11px; }
+.simple-shell .rules-presets { border-top: 1px solid var(--border); }
+.simple-shell .rules-preset-card { border: 1px solid var(--border); border-radius: 10px; background: var(--surface-2); padding: 8px 11px; }
+.simple-shell .rules-preset-card:hover { border-color: var(--border-strong); }
+.simple-shell .rules-preset-card.active { border-color: var(--cyan); background: var(--surface-3); }
+.simple-shell .rules-preset-snippet { font-size: 11px; }
+.simple-shell .rules-presets-toggle:hover, .simple-shell .rules-presets-toggle em { color: var(--cyan); }
+.simple-shell .toolrow { border-bottom: 1px solid var(--border); padding: 9px 2px; }
+.simple-shell .toolrow .n { color: var(--text); font-size: 13px; }
+.simple-shell .toolrow .n small { color: var(--faint); font-size: 11px; }
+.simple-shell .toolrow .n .cnt { color: var(--cyan); font-size: 11px; }
+.simple-shell .tool-exp:hover { color: var(--cyan); }
+.simple-shell .tooldetail { border-bottom: 1px solid var(--border); }
+.simple-shell .td-name { color: var(--cyan); font-size: 11.5px; }
+.simple-shell .td-desc { font-size: 12px; }
+.simple-shell .panel-hdr {
+  border: 1px solid var(--border); border-radius: 10px;
+  background: var(--surface-2); color: var(--text); font-size: 13px; font-weight: 650; padding: 9px 11px;
+}
+.simple-shell .panel-hdr:hover { border-color: var(--border-strong); background: var(--surface-3); }
+.simple-shell .panel-hdr small { color: var(--faint); font-size: 11px; }
+/* Switches: rounded pill, accent-on. */
+.simple-shell :is(#astate, .cfg-pane) .toggle .track { border: 1px solid var(--border-strong); border-radius: 99px; background: var(--surface-3); }
+.simple-shell :is(#astate, .cfg-pane) .toggle .thumb { border-radius: 50%; background: var(--faint); transition: transform .15s ease, background .15s ease; }
+.simple-shell :is(#astate, .cfg-pane) .toggle input:checked + .track { border-color: var(--cyan); background: color-mix(in srgb, var(--cyan) 24%, var(--surface-3)); }
+.simple-shell :is(#astate, .cfg-pane) .toggle input:checked + .track + .thumb { background: var(--cyan); }
+.simple-shell :is(#astate, .cfg-pane) .toggle input:disabled + .track { border-color: var(--border-strong); background: var(--surface-3); opacity: .55; }
+.simple-shell :is(#astate, .cfg-pane) .toggle input:disabled + .track + .thumb { background: var(--faint); opacity: .55; }
+.simple-shell :is(#astate, .cfg-pane) .toggle:has(input:disabled) { cursor: not-allowed; }
+
+/* Toasts render outside `.simple-shell` (a body-level sibling), so this one
+   block is prefixed with the root `.layout-simple` instead. Skin only —
+   theme.css positions the stack. */
+.layout-simple .toast {
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  border: 1px solid var(--border-strong); border-radius: 10px;
+  background: var(--surface-2); box-shadow: 0 10px 30px rgb(0 0 0 / 40%);
+  font-size: 13px; padding: 9px 15px;
+}
+
+/* ===== Config content (shared ConfigView + config/*.svelte panels) =====
+   The staged form is shape-neutral — 1px borders, no clip-paths, no pixel
+   drop-shadows — so this shell only has to lend it its own radii, sans type and
+   cyan accent. Structure (sections, the two-column row, the commit bar) is
+   theme.css's and is deliberately left alone. */
+.simple-shell .cfg-sec-hd { border-top: 1px solid var(--border); }
+.simple-shell .cfg-sec-hd .t { font-family: inherit; font-size: 12.5px; font-weight: 650; letter-spacing: .2px; text-transform: none; }
+.simple-shell .cfg-sec-hd .d { font-family: inherit; font-size: 12px; }
+.simple-shell .cfg-row { border-radius: 10px; }
+.simple-shell .cfg-row .label { font-family: inherit; font-size: 13.5px; font-weight: 650; }
+.simple-shell .cfg-row .label small { font-family: inherit; font-size: 12px; font-weight: 400; }
+.simple-shell .cfg-row .diff { font-size: 11.5px; }
+.simple-shell .cfg-pane input[type=text], .simple-shell .cfg-pane input[type=password],
+.simple-shell .cfg-pane input[type=url], .simple-shell .cfg-pane input[type=number],
+.simple-shell .cfg-pane select, .simple-shell .cfg-pane textarea, .simple-shell .k-in {
+  border: 1px solid var(--border); border-radius: 9px; background: var(--surface-2);
+  font-family: inherit; font-size: 13px;
+}
+.simple-shell .cfg-pane input:focus, .simple-shell .cfg-pane select:focus,
+.simple-shell .cfg-pane textarea:focus, .simple-shell .k-in:focus { border-color: var(--cyan); }
+.simple-shell .k-btn {
+  border: 1px solid var(--border-strong); border-radius: 9px; background: var(--surface-2); color: var(--text);
+  font-family: inherit; font-size: 12.5px; font-weight: 650; letter-spacing: 0;
+}
+.simple-shell .k-btn.pri { border-color: var(--cyan); background: var(--cyan); color: #101821; }
+.simple-shell .k-btn.pri:hover:not(:disabled) { border-color: var(--cyan); color: #101821; }
+.simple-shell .k-btn.ghost { background: transparent; }
+.simple-shell .k-btn.dgr { background: transparent; color: var(--danger); border-color: color-mix(in srgb, var(--danger) 55%, transparent); }
+.simple-shell .k-btn.dgr.armed { background: var(--danger); color: #101821; }
+.simple-shell .k-step { border: 1px solid var(--border); border-radius: 9px; background: var(--surface-2); overflow: hidden; }
+.simple-shell .k-step .u { font-family: inherit; font-size: 11px; }
+.simple-shell .k-step button { background: transparent; }
+.simple-shell .k-seg { border: 1px solid var(--border); border-radius: 99px; background: var(--surface-2); }
+.simple-shell .k-seg button { background: transparent; border-right: 0; font-family: inherit; font-size: 12.5px; font-weight: 650; }
+.simple-shell .k-seg button[aria-pressed="true"] { background: var(--cyan); color: #101821; }
+.simple-shell .k-dd-pop {
+  border: 1px solid var(--border); border-radius: 10px; background: var(--surface-2);
+  filter: none; box-shadow: 0 10px 30px rgb(0 0 0 / 35%);
+}
+.simple-shell .k-dd-pop button { font-family: inherit; font-size: 12.5px; border-bottom-color: var(--border); }
+.simple-shell .k-dd-pop .grp { font-family: inherit; letter-spacing: .2px; }
+.simple-shell .k-chip { border-radius: 99px; font-family: inherit; font-size: 11.5px; padding: 3px 9px; }
+.simple-shell .k-empty, .simple-shell .k-saved, .simple-shell .cfg-err { font-family: inherit; font-size: 12px; }
+.simple-shell .k-slide input[type=range]::-webkit-slider-runnable-track { border: 0; border-radius: 99px; background: var(--surface-3); }
+.simple-shell .k-slide input[type=range]::-webkit-slider-thumb { width: 14px; height: 14px; margin-top: -5px; border-radius: 50%; background: var(--cyan); }
+.simple-shell .k-slide input[type=range]::-moz-range-track { border: 0; border-radius: 99px; background: var(--surface-3); }
+.simple-shell .k-slide input[type=range]::-moz-range-thumb { width: 14px; height: 14px; border-radius: 50%; background: var(--cyan); }
+.simple-shell .k-slide output { font-family: inherit; }
+.simple-shell .cfg-mode { border: 1px solid var(--border); border-radius: 12px; background: var(--surface-2); }
+.simple-shell .cfg-mode .nm { font-family: inherit; font-weight: 650; }
+.simple-shell .cfg-mode .badge { border-radius: 99px; background: var(--cyan); color: #101821; font-family: inherit; letter-spacing: .2px; }
+.simple-shell .cfg-mode .rk { font-family: inherit; font-size: 11px; letter-spacing: 0; }
+/* The commit bar is the one piece that must stay obvious: rounded bottom corners
+   and a dropped shadow, so it reads as a tray pinned under the tab strip. */
+.simple-shell .cfg-bar {
+  border: 1px solid var(--border); border-radius: 0 0 12px 12px; background: var(--surface-2);
+  box-shadow: 0 6px 18px rgb(0 0 0 / 28%);
+}
+.simple-shell .cfg-bar .st { font-family: inherit; font-size: 12.5px; }
+
+@media (max-width: 1080px) {
+  /* No room for chat + rail side by side: the rail floats over the chat.
+     `width`, not `flex-basis`: an absolutely positioned box is out of flow and
+     is NOT a flex item, so flex-basis is ignored and the width falls back to
+     shrink-to-fit — which tracks content, so switching to a populated tab
+     (SKILLS) widened the rail and shifted its left edge. */
+  .simple-work { position: relative; }
+  .simple-rail {
+    position: absolute; inset: 0 0 0 auto; z-index: 5;
+    width: min(316px, 88%); flex-basis: auto;
+    box-shadow: -18px 0 40px rgb(0 0 0 / 38%);
+  }
+}
+
+@media (max-width: 760px) {
+  .simple-shell { display: flex; flex-direction: column; }
+  .simple-sidebar { flex: 0 0 auto; width: 100%; height: auto; padding: 18px 14px 12px; border-right: 0; border-bottom: 1px solid var(--border); }
+  .simple-brand { padding: 0 8px 18px; }
+  .simple-nav { grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 4px; }
+  /* Column layout: equal fixed height per tab, label no longer flex:1 or it
+     eats the leftover vertical space and de-centers the icon. */
+  .simple-nav button { height: 46px; justify-content: center; gap: 4px; padding: 4px; flex-direction: column; font-size: 10px; text-align: center; }
+  .simple-nav button > span:first-child { flex: 0 0 auto; height: 16px; font-size: 15px; }
+  .simple-nav button > span:last-child { flex: 0 0 auto; width: 100%; }
+  .simple-side-bottom { display: flex; justify-content: flex-end; margin-top: 12px; }
+  .simple-connection { padding: 0 8px; font-size: 11px; }
+  .simple-main { min-height: 0; padding: 20px 14px 16px; }
+  .simple-topbar { margin-bottom: 14px; }
+  .simple-topbar h1 { font-size: 22px; }
+  .simple-status { font-size: 11px; }
+  /* Narrow: same fixed-size rule, just a smaller tab. */
+  .simple-tab { flex: 0 0 142px; }
+  .simple-shell #messages, .simple-shell .att-preview { padding-inline: 14px; }
+  .simple-shell #composer { padding: 10px 14px 12px; }
+  .simple-shell #todo-strip { right: 14px; }
+  .simple-shell .msg.user .box { max-width: 88%; }
+}
+
+@media (max-width: 420px) {
+  .simple-links .lbl { display: none; }
+  .simple-nav button > span:last-child { max-width: 58px; }
+}

@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+uv.lock
+
+# one-off restructure scripts + their intermediate snapshots
+web/.d2/
+
+# OS
+.DS_Store
+
+# Tests — tracked. `xu test` runs both suites: brain pytest and the web checks
+# (node --test). Compiled caches stay ignored via the __pycache__ rules above.
+
+# scratch
+_patch_tests.py
+
+# local UI prototypes
+example*.html
