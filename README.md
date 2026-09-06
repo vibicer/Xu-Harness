@@ -26,7 +26,7 @@ is optional; the launcher falls back to stdlib `venv` + `pip` without it.
 
 ```bash
 git clone https://github.com/vibicer/Xu.git
-cd Xu
+cd Xu-Harness
 python xu.py start    # creates brain venv, builds web UI, opens http://localhost:1421
 ```
 
