@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "xu-brain"
-version = "0.1.0"
+version = "1.0.0"
 description = "Xu agent brain — sidecar daemon: agent loop, tools, memory, skills, plugins"
 readme = "README.md"
 requires-python = ">=3.12"

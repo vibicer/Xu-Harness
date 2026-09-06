@@ -3,6 +3,7 @@
 
   interface AppStatus {
     brain: string;
+    version?: string;
     providers?: string[];
     rss_mb?: number | null;
   }
@@ -28,7 +29,7 @@
 
 <div id="ws-bar">
   <span class="id">XU.SYS</span>
-  <span class="val">v0.1.0</span>
+  <span class="val">{status.version ? `v${status.version}` : "—"}</span>
   <span style="width:2px;height:18px;background:var(--border);display:inline-block;"></span>
   <span class="id">SESS</span>
   <span class="val">{brain.session ? brain.session.id : "—"}</span>

@@ -297,6 +297,7 @@ def _register_methods(app: App) -> None:
     async def app_status(params: dict[str, Any]) -> dict[str, Any]:
         return {
             "brain": "ok",
+            "version": __version__,
             "providers": [p.id for p in app.providers.list()],
             "rss_mb": _rss_mb_self(),
         }

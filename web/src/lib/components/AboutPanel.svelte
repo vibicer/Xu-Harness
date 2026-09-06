@@ -8,6 +8,17 @@
 
   let avatarInput: HTMLInputElement | undefined = $state(undefined);
   let avatarPreview: string | null = $state(null);
+  let version = $state<string>("");
+
+  $effect(() => {
+    if (!open) return;
+    let alive = true;
+    brain.client
+      .call<{ version: string }>("app.info")
+      .then((i) => { if (alive) version = i.version; })
+      .catch(() => { /* keep last */ });
+    return () => { alive = false; };
+  });
 
   function close(): void {
     avatarPreview = null;
@@ -52,7 +63,7 @@
     <div class="about-head">
       <div>
         <div id="about-title" class="about-title">XU</div>
-        <div class="about-ver">v0.1.0 · Svelte 5 SPA · local brain</div>
+        <div class="about-ver">{version ? `v${version}` : "…"} · Svelte 5 SPA · local brain</div>
       </div>
     </div>
     <div class="about-body">

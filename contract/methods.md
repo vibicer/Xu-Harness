@@ -29,7 +29,7 @@ on `ws://127.0.0.1:9876` (override `XU_BRAIN_URL`), JSON-RPC 2.0 message framing
 | Method | Params | Result | Notes |
 |---|---|---|---|
 | `app.info` | — | `{ version, data_home, brain_pid }` | handshake |
-| `app.status` | — | `{ brain: "ok", providers: [...], rss_mb }` | status squares |
+| `app.status` | — | `{ brain: "ok", version, providers: [...], rss_mb }` | status squares |
 | `app.doctor` | — | `{ checks: [{ name, ok, detail }] }` | diagnostics: data_home/providers |
 | `logs.list` | `{ limit?, source?, level? }` | `{ logs: [{ ts, level, source, message, detail? }] }` | activity ring buffer, newest first; capped at 1000 entries in the brain |
 | `provider.list` | — | `[{ id, type, base_url, models, key_set }]` | key never returned |
