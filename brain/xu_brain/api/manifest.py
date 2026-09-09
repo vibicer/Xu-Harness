@@ -54,21 +54,25 @@ class Manifest:
     # offer it in Config → Themes with nothing executing.
     themes: list[dict[str, Any]] = field(default_factory=list)
     # Frontend contribution (the ``panel`` slot): a plain-JS, single-file
-    # module ``{module, element, mount, label?, icon?}`` defining a custom
-    # element that the shell mounts at a named spot. Empty = no UI.
+    # module ``{module, element, mount, label?, icon?, assets?}`` defining a
+    # custom element that the shell mounts at a named spot, plus optional
+    # extra servable files. Empty = no UI.
     ui: dict[str, Any] = field(default_factory=dict)
     raw: dict[str, Any] = field(default_factory=dict)
 
 
-# Where a plugin's custom element may be mounted. The shell owns these spots;
-# an unknown value is dropped so a typo can't silently render nowhere.
+# Mounts a plugin's custom element may land on. The set is OPEN: any
+# well-formed lowercase-dashed name validates, because a layout plugin may
+# offer spots the built-in shell doesn't know — validation checks the shape,
+# and the *host* warns when no built-in layout offers the name. So this set
+# is documentation plus that warning's source, NOT a validation gate.
 #
 # ``statusbar`` is a chip slot *inside* a built-in layout. ``config`` is a pane
 # in Config, reached by a tab the shell renders from ``ui.label`` / ``ui.icon``.
 # ``layout`` is the whole shell: a plugin mounting there replaces the layout
 # entirely and owns everything under the app root, so at most one can be
 # showing — the shell selects it via ``brain.layout === "plugin:<name>"``.
-UI_MOUNTS: frozenset[str] = frozenset({"statusbar", "config", "layout"})
+BUILTIN_UI_MOUNTS: frozenset[str] = frozenset({"statusbar", "config", "layout", "view"})
 
 # A config tab is a word or two in a narrow strip; longer would just truncate.
 _MAX_UI_LABEL = 24
@@ -192,8 +196,13 @@ def validate_manifest(data: dict[str, Any]) -> list[str]:
             if element and "-" not in element:
                 errors.append(f"manifest.ui.element {element!r} must contain a dash")
             mount = ui.get("mount", "statusbar")
-            if mount is not None and mount not in UI_MOUNTS:
-                errors.append(f"manifest.ui.mount {mount!r} is not one of {sorted(UI_MOUNTS)}")
+            # Mounts are open (see BUILTIN_UI_MOUNTS): a layout plugin may
+            # offer spots the built-in shell doesn't know, so membership is
+            # NOT checked here — only the shape, since a malformed name can
+            # never match a slot any layout offers. The host warns about the
+            # unfamiliar-but-legal ones.
+            if not (isinstance(mount, str) and _ICON_NAME.match(mount)):
+                errors.append("manifest.ui.mount must be a lowercase-dashed mount name")
             # A `config` pane needs a tab to open it, and the shell renders that
             # tab from data — so the label/icon live here beside the mount.
             label = ui.get("label")
@@ -207,6 +216,25 @@ def validate_manifest(data: dict[str, Any]) -> list[str]:
             # injection point in a slot the shell renders itself.
             if icon is not None and not (isinstance(icon, str) and _ICON_NAME.match(icon)):
                 errors.append("manifest.ui.icon must be a lowercase-dashed icon name")
+            assets = ui.get("assets")
+            if assets is not None:
+                # Extra files the frontend may fetch beyond ``ui.module`` (a
+                # data file, a worker, a chart library...). Served straight
+                # off disk like ``ui.module``, so each must be a bare
+                # filename — no traversal, no absolute paths. Duplicates are
+                # harmless (the server checks membership in a set), so they
+                # stay legal rather than being policed here.
+                if not isinstance(assets, list):
+                    errors.append("manifest.ui.assets must be a list of filenames")
+                else:
+                    for i, a in enumerate(assets):
+                        if (
+                            not isinstance(a, str) or not a.strip()
+                            or "/" in a or "\\" in a or ".." in a
+                        ):
+                            errors.append(
+                                f"manifest.ui.assets[{i}] must be a bare filename in the plugin dir"
+                            )
 
     return errors
 
@@ -236,6 +264,11 @@ def load_manifest(path: Path) -> Manifest | None:
         for key in ("label", "icon"):
             if isinstance(ui_raw.get(key), str) and ui_raw[key].strip():
                 ui[key] = ui_raw[key].strip()
+        # Extra servable frontend files, same passthrough rule as label/icon:
+        # validated above, passed through stripped; absent stays absent.
+        assets = ui_raw.get("assets")
+        if isinstance(assets, list):
+            ui["assets"] = [str(a).strip() for a in assets]
     return Manifest(
         name=raw["name"].strip(),
         version=str(raw.get("version", "0.0.0")),
@@ -251,7 +284,7 @@ def load_manifest(path: Path) -> Manifest | None:
 
 __all__ = [
     "KNOWN_SLOTS",
-    "UI_MOUNTS",
+    "BUILTIN_UI_MOUNTS",
     "Manifest",
     "load_manifest",
     "validate_manifest",

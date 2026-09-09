@@ -22,12 +22,62 @@ import shutil
 import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 try:
     import yaml  # PyYAML — optional but commonly present
 except ImportError:  # pragma: no cover — fall back to a tiny parser
     yaml = None  # type: ignore[assignment]
+
+def _digest(body: str, max_chars: int = 600) -> str:
+    """Extract a small structural summary without interpreting markdown."""
+    if not body:
+        return ""
+    lines = body.splitlines()
+    selected: list[str] = []
+    start = 0
+    if lines and lines[0].startswith("#"):
+        selected.append(lines[0])
+        start = 1
+    while start < len(lines) and not lines[start].strip():
+        start += 1
+    paragraph: list[str] = []
+    index = start
+    while index < len(lines) and lines[index].strip():
+        if lines[index].lstrip().startswith(("- ", "* ")):
+            break
+        paragraph.append(lines[index])
+        index += 1
+    selected.extend(paragraph)
+    cutoff = len(body) / 4
+    position = 0
+    for line in lines:
+        if position >= cutoff:
+            break
+        if line.lstrip().startswith(("- ", "* ")):
+            selected.append(line)
+        position += len(line) + 1
+    if not selected:
+        return body[:max_chars]
+    result: list[str] = []
+    used = 0
+    dropped = False
+    for line in selected:
+        cost = len(line) if not result else len(line) + 1
+        if used + cost > max_chars:
+            dropped = True
+            break
+        result.append(line)
+        used += cost
+    if dropped and result:
+        suffix = "\n…"
+        while result and len("\n".join(result)) + len(suffix) > max_chars:
+            result.pop()
+        if result:
+            return "\n".join(result) + suffix
+        return suffix[1:max_chars]
+    return "\n".join(result)
+
 
 __all__ = ["SkillsEngine", "SkillState", "Skill", "BUILTIN_PACK_DIR", "BUILTIN_PACK_DIRS"]
 
@@ -164,6 +214,9 @@ class SkillsEngine:
         # See _evict_over_budget: prevents the system prompt from bloating
         # unboundedly across a session as skills accumulate.
         self.max_loaded_chars = 0  # set by the agent, 0 = unlimited
+        # Per-session override source: ``(session_id) -> {skill_id: enabled}``,
+        # wired to Config by the App. Absent key = follow the global default.
+        self.session_overrides: Callable[[str], dict[str, bool]] = lambda _sid: {}
         self._state_file = self.skills_dir / ".state.json"
         self._scan()
         self._apply_saved_state()
@@ -315,17 +368,33 @@ class SkillsEngine:
 
     # ---- public API ----
 
-    def list(self, all: bool = False) -> list[dict[str, Any]]:
-        """Catalog rows: ``[{id, name, desc, state}]``.
+    def list(self, all: bool = False, session_id: str | None = None) -> list[dict[str, Any]]:
+        """Catalog rows: ``[{id, name, desc, state, ambient, keywords}]``.
 
         By default OFF skills are excluded (the model-facing catalog). Pass
         ``all=True`` for management UIs so disabled skills stay visible.
+
+        ``session_id`` overlays that session's overrides onto the global
+        ``ambient``/``state`` so each session's catalog reads as its own
+        effective set; without it the rows are the global defaults.
         """
-        return [
-            s.catalog()
-            for s in sorted(self._skills.values(), key=lambda s: s.id)
-            if all or s.state != SkillState.OFF
-        ]
+        ov = self.session_overrides(session_id) if session_id else {}
+        rows: list[dict[str, Any]] = []
+        for s in sorted(self._skills.values(), key=lambda s: s.id):
+            eff_state, eff_ambient = s.state, s.ambient
+            if s.id in ov:
+                on = ov[s.id]
+                eff_ambient = on
+                if not on:
+                    eff_state = SkillState.OFF
+                elif s.state == SkillState.OFF:
+                    eff_state = SkillState.DEMAND
+            if all or eff_state != SkillState.OFF:
+                row = s.catalog()
+                row["state"] = eff_state
+                row["ambient"] = eff_ambient
+                rows.append(row)
+        return rows
 
     @staticmethod
     def _validate_id(id: str) -> str:
@@ -395,6 +464,21 @@ class SkillsEngine:
         _, body = self._read(skill.path)
         return body
 
+    def overview(self, id: str) -> str:
+        """Return a compact skill overview without changing its load state."""
+        skill = self._skills.get(id)
+        if skill is None:
+            raise KeyError(f"unknown skill: {id}")
+        if skill.state == SkillState.OFF:
+            raise ValueError(f"skill disabled: {id}")
+        if skill.body is not None:
+            body = skill.body
+        else:
+            if skill.path is None or not skill.path.is_file():
+                raise FileNotFoundError(f"skill body missing: {id}")
+            _, body = self._read(skill.path)
+        return f"{skill.name} — {skill.desc.splitlines()[0] if skill.desc else ''}\n{_digest(body)}"
+
     def load(self, id: str) -> str:
         """Return the full SKILL.md body and mark the skill LOADED.
 
@@ -445,23 +529,6 @@ class SkillsEngine:
             if total <= limit:
                 break
             total -= len(s.body or "")
-            self.unload(sid)
-    def load_handle(self, id: str):
-        """Load a skill and return a disposer for its in-memory state.
-
-        Unlike :meth:`unload`, this is safe for callers that need to undo one
-        temporary skill activation without affecting persisted files.
-        """
-        body = self.load(id)
-        disposed = False
-
-        def dispose() -> None:
-            nonlocal disposed
-            if not disposed:
-                disposed = True
-                self.unload(id)
-
-        return body, dispose
 
     def unload(self, id: str) -> None:
         """Drop the cached body; state returns to DEMAND."""

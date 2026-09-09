@@ -16,17 +16,6 @@
   let personaDeleting = $state<Record<string, boolean>>({});
   let personaConfirm = $state<string | null>(null);
   let personaErr = $state<string | null>(null);
-  let memSaving = $state<Record<string, boolean>>({});
-  let memSaved = $state<Record<string, boolean>>({});
-  let memDeleting = $state<Record<string, boolean>>({});
-  let memConfirm = $state<string | null>(null);
-  let memDraft = $state("");
-  let memAdding = $state(false);
-  let memCommitting = $state(false);
-  let memErr = $state<string | null>(null);
-  /** Staged entry edits, keyed by memory id. A missing key means "untouched", so
-   *  typing back to the stored text un-stages the row instead of leaving a flag on. */
-  let memDrafts = $state<Record<string, string>>({});
   let confirmTimer: ReturnType<typeof setTimeout> | undefined;
   const errText = (e: unknown): string => (e instanceof Error ? e.message : String(e));
   async function openPersona(id: string): Promise<void> {
@@ -46,7 +35,7 @@
       personaOrig = personaText; personaSaved = true; setTimeout(() => personaSaved = false, 1200);
     } catch (e) { personaErr = `save failed: ${errText(e)}`; } finally { personaSaving = false; }
   }
-  function armConfirm(kind: "persona" | "mem", id: string): void { const next = (kind === "persona" ? personaConfirm : memConfirm) === id ? null : id; if (kind === "persona") personaConfirm = next; else memConfirm = next; clearTimeout(confirmTimer); if (next !== null) confirmTimer = setTimeout(() => { personaConfirm = null; memConfirm = null; }, 3000); }
+  function armConfirm(id: string): void { const next = personaConfirm === id ? null : id; personaConfirm = next; clearTimeout(confirmTimer); if (next !== null) confirmTimer = setTimeout(() => (personaConfirm = null), 3000); }
   async function deletePersona(id: string): Promise<void> {
     personaDeleting = { ...personaDeleting, [id]: true }; personaErr = null;
     try { await brain.deletePersona(id); if (personaEdit === id) personaEdit = null; }
@@ -62,33 +51,6 @@
     dataErr = null;
     try { await navigator.clipboard.writeText(dataHome); copiedPath = true; setTimeout(() => copiedPath = false, 1200); }
     catch { dataErr = "clipboard unavailable — select the path and copy manually"; }
-  }
-  function memRows(text: string): number { return Math.min(12, Math.max(2, text.split("\n").length + 1)); }
-  function memText(id: string, stored: string): string { return memDrafts[id] ?? stored; }
-  const memPending = $derived(brain.memories.filter((m) => memText(m.id, m.text) !== m.text));
-  function dropDraft(id: string): void { const next = { ...memDrafts }; delete next[id]; memDrafts = next; }
-  function discardMemEdits(): void { memDrafts = {}; memErr = null; }
-  async function saveMemory(id: string, text: string): Promise<void> {
-    memSaving = { ...memSaving, [id]: true };
-    try {
-      await brain.updateMemory(id, text);
-      dropDraft(id); memSaved = { ...memSaved, [id]: true }; setTimeout(() => memSaved = { ...memSaved, [id]: false }, 1200);
-    } catch (e) { memErr = `save failed (${id}): ${errText(e)}`; } finally { memSaving = { ...memSaving, [id]: false }; }
-  }
-  /** Commit every staged entry. A failure leaves that draft staged and names it. */
-  async function commitMemEdits(): Promise<void> {
-    memErr = null; memCommitting = true;
-    try { for (const m of memPending) await saveMemory(m.id, memText(m.id, m.text)); } finally { memCommitting = false; }
-  }
-  async function deleteMemory(id: string): Promise<void> {
-    memDeleting = { ...memDeleting, [id]: true }; memErr = null;
-    try { await brain.deleteMemory(id); dropDraft(id); }
-    catch (e) { memErr = `delete failed: ${errText(e)}`; } finally { memDeleting = { ...memDeleting, [id]: false }; }
-  }
-  async function addMemory(): Promise<void> {
-    const text = memDraft.trim(); if (!text) return;
-    memAdding = true; memErr = null;
-    try { await brain.addMemory(text); memDraft = ""; } catch (e) { memErr = `add failed: ${errText(e)}`; } finally { memAdding = false; }
   }
   $effect(() => { const info = brain.client.call<{ data_home: string }>("app.info"); void info.then((x) => dataHome = x.data_home).catch((e) => dataErr = `data home unavailable: ${errText(e)}`); });
 </script>
@@ -191,7 +153,7 @@
               class="k-btn dgr sm"
               class:armed={personaConfirm === p.id}
               disabled={personaDeleting[p.id]}
-              onclick={() => (personaConfirm === p.id ? void deletePersona(p.id) : armConfirm("persona", p.id))}
+              onclick={() => (personaConfirm === p.id ? void deletePersona(p.id) : armConfirm(p.id))}
             >
               {personaConfirm === p.id ? (personaDeleting[p.id] ? "…" : "SURE?") : "DEL"}
             </button>
@@ -205,67 +167,5 @@
     {#if personaEdit === "__new__"}
       {@render personaEditor()}
     {/if}
-  </div>
-
-  <div class="cfg-sec">
-    <div class="cfg-sec-hd">
-      <span class="t">MEMORY</span>
-      <span class="d">MEMORY.md · {brain.memories.length} entries{memPending.length > 0 ? ` · ${memPending.length} edited` : ""}</span>
-      <span class="sp"></span>
-    </div>
-    {#if memPending.length > 0 || memErr !== null}
-      <div class="cfg-bar" class:on={memPending.length > 0} class:err={memErr !== null}>
-        <span class="st">{memErr ?? `${memPending.length} unsaved edit${memPending.length === 1 ? "" : "s"}`}</span>
-        <span class="sp"></span>
-        {#if memPending.length > 0}
-          <button type="button" class="k-btn sm" disabled={memCommitting} onclick={discardMemEdits}>DISCARD</button>
-          <button type="button" class="k-btn pri sm" disabled={memCommitting} onclick={() => void commitMemEdits()}>
-            {memCommitting ? "SAVING…" : "SAVE"}
-          </button>
-        {:else}
-          <button type="button" class="k-btn sm" onclick={() => (memErr = null)}>DISMISS</button>
-        {/if}
-      </div>
-    {/if}
-    {#each brain.memories as m (m.id)}
-      {@const text = memText(m.id, m.text)}
-      <div class="cfg-row block mem-row" class:dirty={text !== m.text}>
-        <div class="label">
-          {m.id}
-          <span class="k-chip" class:auto={m.badge === "user-edited"}>{m.badge}</span>
-          <span class="diff">edited — nothing is written until you press SAVE</span>
-        </div>
-        <div class="ctrl">
-          <textarea
-            rows={memRows(text)}
-            value={text}
-            disabled={memDeleting[m.id] || memSaving[m.id]}
-            oninput={(e) => (memDrafts = { ...memDrafts, [m.id]: e.currentTarget.value })}
-          ></textarea>
-          <span class="k-saved" class:on={memSaved[m.id]}>saved</span>
-          <button
-            type="button"
-            class="k-btn dgr sm"
-            class:armed={memConfirm === m.id}
-            disabled={memDeleting[m.id]}
-            onclick={() => (memConfirm === m.id ? void deleteMemory(m.id) : armConfirm("mem", m.id))}
-          >
-            {memConfirm === m.id ? (memDeleting[m.id] ? "…" : "SURE?") : "DEL"}
-          </button>
-        </div>
-      </div>
-    {/each}
-    {#if brain.memories.length === 0}
-      <div class="k-empty">No memory entries yet — durable notes the agent retains appear here.</div>
-    {/if}
-    <div class="cfg-row block">
-      <div class="label">new entry<small>appended to MEMORY.md as a durable note</small></div>
-      <div class="ctrl mem-add">
-        <textarea rows="2" bind:value={memDraft} placeholder="new memory entry…"></textarea>
-        <button type="button" class="k-btn pri sm" disabled={memAdding || memDraft.trim() === ""} onclick={() => void addMemory()}>
-          {memAdding ? "ADDING…" : "+ ADD"}
-        </button>
-      </div>
-    </div>
   </div>
 </div>

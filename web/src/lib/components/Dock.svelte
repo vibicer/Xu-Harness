@@ -1,9 +1,10 @@
 <script lang="ts">
   import AboutPanel from "./AboutPanel.svelte";
   import Icon from "./Icon.svelte";
-  import { VIEW_ICONS } from "../icons";
+  import { VIEW_ICONS, viewIcon } from "../icons";
   import { brain } from "../store.svelte";
-  import type { ViewName } from "../store.svelte";
+  import type { BuiltinViewName, ViewName } from "../store.svelte";
+  import { pluginViews } from "../plugin-views.svelte";
 
   function handleKey(view: ViewName, e: KeyboardEvent): void {
     if (e.key === "Enter" || e.key === " ") {
@@ -16,7 +17,9 @@
 
   function openAbout(): void { aboutOpen = true; }
 
-  const ORDER: ViewName[] = ["workspace", "sessions", "config", "logs"];
+  // Built-ins first (fixed order), plugin-contributed views after — a plugin
+  // view is a dock peer, not a guest, so it gets the same button and keys.
+  const ORDER: BuiltinViewName[] = ["workspace", "sessions", "config", "logs"];
 </script>
 
 <div id="dock">
@@ -45,6 +48,20 @@
     >
       <Icon name={VIEW_ICONS[name]} />
       <span class="tip">{name.toUpperCase()}</span>
+    </div>
+  {/each}
+  {#each pluginViews(brain.plugins) as p (p.name)}
+    {@const view = `plugin:${p.name}` as ViewName}
+    <div
+      class="dock-icon"
+      class:active={brain.view === view}
+      role="button"
+      tabindex="0"
+      onclick={() => brain.setView(view)}
+      onkeydown={(e) => handleKey(view, e)}
+    >
+      <Icon name={viewIcon(view, brain.plugins)} />
+      <span class="tip">{(p.ui?.label ?? p.name).toUpperCase()}</span>
     </div>
   {/each}
 

@@ -172,17 +172,19 @@ export interface DropinInfo {
   enabled: boolean;
 }
 /** A plugin's frontend contribution: an ES module in the plugin dir defining a
- *  custom element the shell mounts at a named spot. `label`/`icon` are the tab
- *  chrome for `mount: "config"`; the shell falls back when either is absent or
- *  names an icon it doesn't ship. */
+ *  custom element the shell mounts at a named spot. `label`/`icon` are the
+ *  nav/tab chrome for `mount: "config"` and `mount: "view"`; the shell falls
+ *  back when either is absent or names an icon it doesn't ship. */
 export interface PluginUI {
   module: string;
   element: string;
   mount: string;
   label?: string;
   icon?: string;
+  /** Extra bare filenames in the plugin dir the module needs (served beside
+   *  `module`); the shell never fetches them itself. */
+  assets?: string[];
 }
-
 /** One setting a plugin's manifest declares, carrying its live value. The host
  *  merges the stored value over the declared default, so `value` is what is in
  *  effect — the shell renders it without a second lookup. */
@@ -260,6 +262,14 @@ export interface AppConfig {
   firecrawl_enabled: boolean;
   firecrawl_key: string | null;
   prune_keep: number;
+  /** Built-in Mnemosyne long-term memory (optional = brain defaults apply). */
+  memory_mnemosyne_inject?: boolean;
+memory_mnemosyne_embeddings?: boolean;
+  memory_mnemosyne_top_k?: number;
+  memory_mnemosyne_max_chars?: number;
+  /** Turn-tail auto-capture of durable facts. */
+  memory_autocapture?: boolean;
+  memory_capture_min_interval?: number;
 }
 
 export interface TodoItem {

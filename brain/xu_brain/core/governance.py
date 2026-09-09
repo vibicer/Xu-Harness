@@ -42,6 +42,10 @@ _DESTRUCTIVE_SHELL = re.compile(
 )
 _ALWAYS_DELETE_TOOLS: set[str] = set()  # empty by user preference; gate kept
 
+# Reason string returned by ApprovalManager.request when the user did not
+# answer an approval card before the timeout: the caller should pause the turn.
+TIMEOUT_REASON = "approval timed out"
+
 
 @runtime_checkable
 class ApprovalPolicy(Protocol):
@@ -245,7 +249,7 @@ class ApprovalManager:
                 await self._event_emitter(
                     "turn.approval_resolved", request_id=request_id, approved=False
                 )
-            return False, "approval timed out"
+            return False, TIMEOUT_REASON
         finally:
             self._pending.pop(request_id, None)
             self._pending_sessions.pop(request_id, None)
@@ -325,4 +329,5 @@ __all__ = [
     "ApprovalLevel",
     "ApprovalManager",
     "ApprovalPolicy",
+    "TIMEOUT_REASON",
 ]

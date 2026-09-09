@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import contextlib
 import os
-import secrets
 import shutil
 import sqlite3
 import time

@@ -1,6 +1,12 @@
 import type { StatePanel, Step, SessionInfo, ChatMessage } from "../types";
+/** A shell view. The built-ins are the shell's own; `plugin:<name>` is a full
+ *  view contributed by an enabled plugin (`ui.mount: "view"`). */
+export type ViewName = "workspace" | "sessions" | "config" | "logs" | "onboarding" | `plugin:${string}`;
 
-export type ViewName = "workspace" | "sessions" | "config" | "logs" | "onboarding";
+/** The shell's own views — the fixed glyph set VIEW_ICONS is keyed by. A
+ *  plugin view has no fixed glyph (its manifest names one), so it resolves
+ *  through `viewIcon` instead. */
+export type BuiltinViewName = Exclude<ViewName, `plugin:${string}`>;
 
 export type CompactionResult = { ok: boolean; error?: string; before?: number; after?: number; dropped?: number };
 export interface TurnDraft {

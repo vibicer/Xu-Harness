@@ -195,7 +195,7 @@ def _turn_agent(vision: str | None, session_model: str, stream):
         resolve=lambda model, _p=None: (SimpleNamespace(id="prov"), model) if model else None,
         chat_stream=stream,
     )
-    agent.registry = SimpleNamespace(schemas_for_model=lambda: [], reset_breakers=lambda: None)
+    agent.registry = SimpleNamespace(schemas_for_model=lambda _s=None: [], reset_breakers=lambda: None)
     agent._build_messages = lambda _session, node=None: [{
         "role": "user",
         "content": "look at this\n\n[image attached: /tmp/x.png — call inspect_image on it]",

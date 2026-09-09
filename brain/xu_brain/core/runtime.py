@@ -11,7 +11,7 @@ relative imports below are intra-package (``..``) because this module lives one
 level deeper than the old server did.
 """
 from __future__ import annotations
-
+from functools import partial
 import inspect
 import json
 import logging
@@ -27,6 +27,7 @@ from .. import __version__
 from .activity import activity
 from ..features.agent.loop import Agent
 from ..features.agent.provider import ProviderManager
+from ..features.memory import mnemo
 from ..features.agent import rpc as agent_rpc
 from .governance import ApprovalManager
 from .config import Config, default_data_home, ensure_data_home
@@ -153,7 +154,10 @@ class App:
         self.sessions = SessionStore(data_home)
         self.providers = ProviderManager(data_home)
         self.memory = MemoryStore(data_home)
+        mnemo.init(data_home)
+        mnemo.apply_embeddings(bool(self.config.get("memory_mnemosyne_embeddings", True)))
         self.skills = SkillsEngine(data_home)
+        self.skills.session_overrides = self.config.session_skill_overrides
         # One shared hook bus: PluginBus registers its
         # loaded plugins onto it, ToolRegistry + Agent + PluginHost all use it.
         self.bus = HookBus()
@@ -183,6 +187,9 @@ class App:
         for ts in self.registry.toolsets():
             enabled = self.config.toolset_enabled(ts["toolset"], True)
             self.registry.enable(ts["toolset"], enabled)
+        # per-session tool overrides (Agent State → TOOLS): resolve through
+        # config so a session toggle never mutates the global default
+        self.registry.session_overrides = self.config.session_tool_overrides
         self.agent = Agent(
             self.sessions, data_home, self.providers, self.registry,
             self.approvals, self.memory, self.skills, self.flat_plugins,
@@ -208,6 +215,10 @@ class App:
         seed_builtin_plugins(data_home)
         self.plugins = PluginHost(self.bus)
         self.plugins.load_dir(data_home / "plugins", self)
+        # Built-in long-term memory digest: inject relevant memories into the
+        # system prompt on every turn, only when mnemosyne-memory is present.
+        if mnemo.available():
+            self.bus.transform("before_llm", partial(mnemo.before_llm, config=self.config))
         # Forge tools reach the plugin host / slot store through the agent.
         self.agent.plugins = self.plugins
         self.agent.slots = self.slots
@@ -411,6 +422,21 @@ def _register_methods(app: App) -> None:
                 app.sessions.prune(keep=n)
             except Exception:  # noqa: BLE001 — pruning is best-effort
                 pass
+        elif key in ("memory_mnemosyne_inject", "memory_autocapture"):
+            app.config.set(key, bool(value))
+        elif key == "memory_mnemosyne_embeddings":
+            app.config.set(key, bool(value))
+            # Runtime toggle: Mnemosyne re-reads its env flag on every call.
+            mnemo.apply_embeddings(bool(value))
+        elif key in ("memory_mnemosyne_top_k", "memory_mnemosyne_max_chars",
+                     "memory_capture_min_interval"):
+            try:
+                n = int(value)
+            except (TypeError, ValueError) as exc:
+                raise RpcError(-32005, f"invalid {key}: {value!r}") from exc
+            if n < 0:
+                raise RpcError(-32005, f"{key} must be >= 0")
+            app.config.set(key, n)
         elif key == "model_fallbacks":
             if not isinstance(value, list):
                 raise RpcError(-32005, "model_fallbacks must be an array of model ids")

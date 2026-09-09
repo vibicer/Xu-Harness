@@ -58,6 +58,59 @@ const CUSTOM_LAYOUTS = $derived(brain.customLayouts.map((item) => ({
     return [t.colors.bg, t.colors.surface, t.colors.magenta, t.colors.cyan];
   }
 
+  /** Effective ambient accent colors: the FX layer uses the active scheme's
+   *  glow colors unless the user set an explicit override. Shown as the color
+   *  pickers' value so they don't sit on a blank swatch before first use. */
+  const fxAccents = $derived.by(() => {
+    const t = brain.allThemes.find((x) => x.id === brain.theme && (x.layout ?? "default") === brain.layout);
+    return {
+      c1: t?.colors["glow-mag"] || "#8bc7ff",
+      c2: t?.colors["glow-cyan"] || "#5fd4ff",
+    };
+  });
+
+  /** Read a chosen image file, downscale it on an offscreen canvas so a big
+   *  wallpaper fits comfortably in localStorage, and hand back a JPEG data URL. */
+  function downscaleWallpaper(file: Blob, maxDim: number): Promise<string> {
+    return new Promise((resolve, reject) => {
+      const url = URL.createObjectURL(file);
+      const img = new Image();
+      img.onload = () => {
+        try {
+          const scale = Math.min(1, maxDim / Math.max(img.width, img.height));
+          const w = Math.max(1, Math.round(img.width * scale));
+          const h = Math.max(1, Math.round(img.height * scale));
+          const canvas = document.createElement("canvas");
+          canvas.width = w;
+          canvas.height = h;
+          const ctx = canvas.getContext("2d");
+          if (!ctx) throw new Error("no 2d context");
+          ctx.drawImage(img, 0, 0, w, h);
+          resolve(canvas.toDataURL("image/jpeg", 0.82));
+        } catch (err) {
+          reject(err);
+        } finally {
+          URL.revokeObjectURL(url);
+        }
+      };
+      img.onerror = () => { URL.revokeObjectURL(url); reject(new Error("could not decode image")); };
+      img.src = url;
+    });
+  }
+
+  async function pickWallpaper(e: Event): Promise<void> {
+    const input = e.currentTarget as HTMLInputElement;
+    const file = input.files?.[0];
+    input.value = "";
+    if (!file) return;
+    if (!file.type.startsWith("image/")) { alert("Pick an image file (PNG/JPEG/WebP)."); return; }
+    try {
+      brain.setBgfx({ wallpaper: await downscaleWallpaper(file, 2400) });
+    } catch {
+      alert("That image could not be read.");
+    }
+  }
+
   function themeKind(t: ThemePreset): string {
     if (t.builtin) return "built-in scheme";
     return t.plugin ? `from ${t.plugin}` : "custom preset";
@@ -134,4 +187,121 @@ const CUSTOM_LAYOUTS = $derived(brain.customLayouts.map((item) => ({
       <div class="color-grid">{#each paletteFor(brain.layout) as p (p.var)}<label class="color-field"><span class="color-label">{p.label}</span><input type="color" value={activeCustom.colors[p.var]} oninput={(e) => void brain.updateThemeColors(activeCustom.id, { [p.var]: e.currentTarget.value })} /><span class="color-hex">{activeCustom.colors[p.var]}</span></label>{/each}</div>
     </div>
   {/if}
+
+  <div class="cfg-sec">
+    <div class="cfg-sec-hd">
+      <span class="t">GLASS &amp; BACKGROUND</span>
+      <span class="d">ambient accents · ride on top of every layout &amp; scheme</span>
+      <span class="sp"></span>
+    </div>
+
+    <div class="cfg-row">
+      <div class="label">glass<small>translucent chrome with a backdrop blur</small></div>
+      <div class="ctrl">
+        <span class="state-badge">{brain.glass.enabled ? "ON" : "OFF"}</span>
+        <label class="toggle">
+          <input type="checkbox" aria-label="enable glass" checked={brain.glass.enabled} onchange={() => brain.setGlass({ enabled: !brain.glass.enabled })} />
+          <span class="track"></span><span class="thumb"></span>
+        </label>
+      </div>
+    </div>
+    {#if brain.glass.enabled}
+      <div class="cfg-row">
+        <div class="label">chrome blur<small>dock, bars, composer — backdrop blur radius</small></div>
+        <div class="ctrl">
+          <span class="k-slide">
+            <input type="range" aria-label="glass chrome blur" min="0" max="32" step="1" value={brain.glass.blur} oninput={(e) => brain.setGlass({ blur: e.currentTarget.valueAsNumber })} />
+            <output>{brain.glass.blur}px</output>
+          </span>
+        </div>
+      </div>
+      <div class="cfg-row">
+        <div class="label">chrome transparency<small>dock, bars, composer — higher = more see-through</small></div>
+        <div class="ctrl">
+          <span class="k-slide">
+            <input type="range" aria-label="glass chrome tint" min="0" max="60" step="1" value={brain.glass.tint} oninput={(e) => brain.setGlass({ tint: e.currentTarget.valueAsNumber })} />
+            <output>{brain.glass.tint}%</output>
+          </span>
+        </div>
+      </div>
+      <div class="cfg-row">
+        <div class="label">panel blur<small>messages, state rows, windows — backdrop blur radius</small></div>
+        <div class="ctrl">
+          <span class="k-slide">
+            <input type="range" aria-label="glass panel blur" min="0" max="32" step="1" value={brain.glass.panelBlur} oninput={(e) => brain.setGlass({ panelBlur: e.currentTarget.valueAsNumber })} />
+            <output>{brain.glass.panelBlur}px</output>
+          </span>
+        </div>
+      </div>
+      <div class="cfg-row">
+        <div class="label">panel transparency<small>messages, state rows, windows — higher = more see-through</small></div>
+        <div class="ctrl">
+          <span class="k-slide">
+            <input type="range" aria-label="glass panel tint" min="0" max="60" step="1" value={brain.glass.panelTint} oninput={(e) => brain.setGlass({ panelTint: e.currentTarget.valueAsNumber })} />
+            <output>{brain.glass.panelTint}%</output>
+          </span>
+        </div>
+      </div>
+    {/if}
+
+    <div class="cfg-row">
+      <div class="label">background<small>wallpaper image, or ambient gradient when none is set</small></div>
+      <div class="ctrl">
+        <span class="state-badge">{brain.bgfx.enabled ? "ON" : "OFF"}</span>
+        <label class="toggle">
+          <input type="checkbox" aria-label="enable background" checked={brain.bgfx.enabled} onchange={() => brain.setBgfx({ enabled: !brain.bgfx.enabled })} />
+          <span class="track"></span><span class="thumb"></span>
+        </label>
+      </div>
+    </div>
+    {#if brain.bgfx.enabled}
+      <div class="cfg-row">
+        <div class="label">wallpaper<small>browse for an image file — it becomes the shell background</small></div>
+        <div class="ctrl">
+          {#if brain.bgfx.wallpaper}
+            <img class="wall-thumb" src={brain.bgfx.wallpaper} alt="wallpaper preview" />
+            <button type="button" class="k-btn dgr" onclick={() => brain.setBgfx({ wallpaper: "" })}>clear</button>
+          {/if}
+          <label class="k-btn pri">
+            browse
+            <input type="file" accept="image/png,image/jpeg,image/webp" onchange={(e) => void pickWallpaper(e)} style="display:none" />
+          </label>
+        </div>
+      </div>
+      {#if brain.bgfx.wallpaper}
+        <div class="cfg-row">
+          <div class="label">wallpaper blur<small>softens the image itself — easier reading behind text</small></div>
+          <div class="ctrl">
+            <span class="k-slide">
+              <input type="range" aria-label="wallpaper blur" min="0" max="20" step="1" value={brain.bgfx.wallBlur} oninput={(e) => brain.setBgfx({ wallBlur: e.currentTarget.valueAsNumber })} />
+              <output>{brain.bgfx.wallBlur}px</output>
+            </span>
+          </div>
+        </div>
+      {:else}
+      <div class="cfg-row">
+        <div class="label">intensity<small>layer opacity</small></div>
+        <div class="ctrl">
+          <span class="k-slide">
+            <input type="range" aria-label="background intensity" min="5" max="100" step="1" value={brain.bgfx.intensity} oninput={(e) => brain.setBgfx({ intensity: e.currentTarget.valueAsNumber })} />
+            <output>{brain.bgfx.intensity}%</output>
+          </span>
+        </div>
+      </div>
+      <div class="cfg-row">
+        <div class="label">accent colors<small>blank = follow the active scheme</small></div>
+        <div class="ctrl">
+          <label class="color-field">
+            <input type="color" aria-label="background accent one" value={brain.bgfx.c1 || fxAccents.c1} oninput={(e) => brain.setBgfx({ c1: e.currentTarget.value })} />
+            <span class="color-hex">{brain.bgfx.c1 || "theme"}</span>
+          </label>
+          <label class="color-field">
+            <input type="color" aria-label="background accent two" value={brain.bgfx.c2 || fxAccents.c2} oninput={(e) => brain.setBgfx({ c2: e.currentTarget.value })} />
+            <span class="color-hex">{brain.bgfx.c2 || "theme"}</span>
+          </label>
+        </div>
+      </div>
+    {/if}
+    {/if}
+  </div>
 </div>

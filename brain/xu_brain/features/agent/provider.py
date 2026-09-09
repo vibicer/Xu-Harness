@@ -25,7 +25,7 @@ import os
 import time
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, AsyncIterator, Callable, Protocol
+from typing import Any, AsyncIterator, Protocol
 
 import httpx
 
@@ -93,10 +93,6 @@ class Provider:
             "key_set": self.key_set,
             "enabled": self.enabled,
         }
-
-
-class ProviderError(Exception):
-    pass
 
 
 class KeychainLike(Protocol):

@@ -4,21 +4,12 @@ A mixin aspect of :class:`~xu_brain.features.agent.loop.Agent`.
 """
 from __future__ import annotations
 
-import hashlib
-import json
 from datetime import datetime
 from typing import Any
 
 from ..session import Session
 from .attachments import dereference as _dereference_images
 from .checkpoint import _CHECKPOINT_MARKER
-
-
-def _messages_fingerprint(messages: list[dict[str, Any]]) -> str:
-    """Stable content hash of the exact message list sent to the model.
-    P3 provenance marker — lets a caller verify the store still reconstructs
-    what the model last saw (detects drift after rewind/compression/plugins)."""
-    return hashlib.sha256(json.dumps(messages, ensure_ascii=False, sort_keys=True).encode()).hexdigest()
 
 
 class PromptMixin:
@@ -106,10 +97,25 @@ class PromptMixin:
         # Context priority: auto-matched skills first (most likely relevant to
         # the active turn), then already-loaded skills, then memory. Under a
         # tight context, the auto-matched intent wins over ambient accumulation.
-        priority: list[str] = []
-        ambient: list[str] = []
-        ambient_after: list[str] = []
-        enabled = {sid for sid in (s["id"] for s in self.skills.list() if s.get("ambient")) if allow is None or sid in allow}
+        # Sections are (kind, sid, text): a 'skill' section can degrade to an
+        # overview tier, 'memory' to a per-entry-capped reflect. sid is the
+        # skill id (None for memory); text is the full tier-1 block.
+        priority: list[tuple[str, str | None, str]] = []
+        ambient: list[tuple[str, str | None, str]] = []
+        ambient_after: list[tuple[str, str | None, str]] = []
+        # Session skill overrides (Agent State → SKILLS) layer over the global
+        # ambient set: absent override = follow the global default, so a new
+        # session injects exactly what Config enables.
+        skill_ov = self.config.session_skill_overrides(session.id)
+        session_disabled = {sid for sid, on in skill_ov.items() if not on}
+        enabled = (
+            {s["id"] for s in self.skills.list() if s.get("ambient")}
+            | {sid for sid, on in skill_ov.items() if on}
+        ) - session_disabled
+        enabled = {sid for sid in enabled if allow is None or sid in allow}
+        # Drop override ids that no longer exist in the catalog (a removed
+        # skill leaves its override behind) so a stale entry can't break a turn.
+        enabled &= {s["id"] for s in self.skills.list(all=True)}
         # Enabled (hard-reserved) skills are ALWAYS injected, exempt from the
         # context budget (Option A). Build them first, independent of state.
         # Session cwd: the harness's own resolution root for file/glob/eval and
@@ -117,36 +123,39 @@ class PromptMixin:
         # model that guesses this reads and writes the wrong tree.
         hard: list[str] = [f"# cwd (session)\n{session.cwd}"]
         for sid in sorted(enabled):
-            body = self.skills.load(sid)
+            # Session-only enables read the body without marking the skill
+            # LOADED globally — that would leak it into other sessions' prompts.
+            body = self.skills.read_body(sid) if sid in skill_ov else self.skills.load(sid)
             if body:
                 hard.append(self._skill_block(sid, "# skill (enabled)", body))
         # keyword auto-match across the recent context (last few user turns +
         # trailing tool results), weighted by recency so an earlier hint still
         # scores but a fresh one wins. Enabled skills are exempt (already in).
-        auto = [mid for mid in self._match_recent(session) if allow is None or mid in allow]
+        auto = [mid for mid in self._match_recent(session)
+                if (allow is None or mid in allow) and mid not in session_disabled]
         for mid in auto:
             if mid in enabled:
                 continue
             body = self.skills.load(mid)
             if body:
-                priority.append(self._skill_block(mid, "# skill (auto)", body))
+                priority.append(("skill", mid, self._skill_block(mid, "# skill (auto)", body)))
         for s in self.skills.list():
             if s["id"] in enabled or s["id"] in auto:
                 continue  # already injected above
             if allow is not None and s["id"] not in allow:
                 continue  # scoped out by the node
-            if s.get("state") != "LOADED":
+            if s.get("state") != "LOADED" or s["id"] in session_disabled:
                 continue
             body = self.skills.load(s["id"])
             if body:
-                ambient.append(self._skill_block(s["id"], "# skill", body))
+                ambient.append(("skill", s["id"], self._skill_block(s["id"], "# skill", body)))
         # memory reflect (node-scoped when the node pins a memory allowlist)
         if mem_scope is not None:
             mem = self.memory.reflect(only=mem_scope)
         else:
             mem = self.memory.reflect()
         if mem:
-            ambient_after.append(f"# memory\n{mem}")
+            ambient_after.append(("memory", None, f"# memory\n{mem}"))
         # Progressive-disclosure budget: the standing prompt carries
         # at most ``context_skill_budget`` chars of *non-enabled* skill/memory
         # body. Enabled skills are hard-reserved and skip the cap; auto-matched
@@ -154,17 +163,37 @@ class PromptMixin:
         # skills and memory, which trim last.
         budget = int(self.config.get("context_skill_budget", 6000))
         if budget and budget > 0:
+            def _overview(kind: str, sid: str | None) -> str | None:
+                if kind == "skill" and sid:
+                    try:
+                        block = self._skill_block(sid, "# skill (overview)",
+                                                   self.skills.overview(sid))
+                        return block
+                    except Exception:  # noqa: BLE001 - overview must never break a turn
+                        return None
+                if kind == "memory":
+                    only = mem_scope if isinstance(mem_scope, list) else None
+                    capped = self.memory.reflect(only=only, entry_cap=200)
+                    return f"# memory\n{capped}" if capped else None
+                return None
+
             chosen: list[str] = []
             used = 0
-            for section in priority + ambient + ambient_after:
-                cost = len(section)
-                if used + cost > budget:
+            for kind, sid, text in priority + ambient + ambient_after:
+                cost = len(text)
+                if cost <= budget - used:
+                    chosen.append(text)
+                    used += cost
                     continue
-                chosen.append(section)
-                used += cost
+                # Tier 2: degrade to an overview before dropping entirely.
+                short = _overview(kind, sid)
+                if short and len(short) <= budget - used:
+                    chosen.append(short)
+                    used += len(short)
             sections = hard + chosen
         else:
-            sections = hard + priority + ambient + ambient_after
+            sections = hard + [t for _k, _s, t in priority] \
+                + [t for _k, _s, t in ambient] + [t for _k, _s, t in ambient_after]
         if sections:
             system += "\n\n" + "\n\n".join(sections)
         # Session rules: one copy in the system prompt so they govern every
@@ -218,14 +247,7 @@ class PromptMixin:
             if m.role == "assistant" and m.reasoning_signature:
                 msg["reasoning_signature"] = m.reasoning_signature
             messages.append(msg)
-        # P3 provenance: fingerprint exactly what the model is about to see so
-        # a later check can confirm the persisted store still reconstructs it.
-        self._last_sent_fp[session.id] = _messages_fingerprint(messages)
         return messages
-
-    def sent_fingerprint(self, session_id: str) -> str | None:
-        """Fingerprint of the last-sent message list (P3 model-visible=logged)."""
-        return self._last_sent_fp.get(session_id)
 
     def _match_recent(self, session: Session) -> list[str]:
         """Keyword-match skills against the recent conversation, not just the

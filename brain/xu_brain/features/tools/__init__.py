@@ -1,7 +1,6 @@
 """Tools package — aggregates all toolsets."""
 from __future__ import annotations
 
-from typing import Any
 from .base import Tool
 
 
@@ -13,6 +12,7 @@ def all_tools() -> list[Tool]:
     from .github_tool import github
     from .image import inspect_image, show_image
     from .memory_tools import memory_edit, recall, reflect, retain_tool
+    from .mnemo_tools import mnemosyne_forget, mnemosyne_recall, mnemosyne_remember
     from .plan import todo
     from .search import glob, grep
     from .skills_tools import manage_skill, skill_list, skill_load
@@ -24,7 +24,7 @@ def all_tools() -> list[Tool]:
               github, inspect_image, show_image, todo, ask, delegate, preset_create,
               subagent_list, subagent_message, subagent_interrupt, memory_edit, retain_tool,
               recall, reflect, skill_list, skill_load, manage_skill, tool_create, tool_list,
-              tool_remove]
+              tool_remove, mnemosyne_remember, mnemosyne_recall, mnemosyne_forget]
     try:
         from .ast import ast_edit, ast_grep
         tools += [ast_grep, ast_edit]
@@ -41,24 +41,3 @@ def all_tools() -> list[Tool]:
     except Exception:
         pass
     return tools
-
-
-TOOLSETS: list[dict[str, Any]] = [
-    {"toolset": "terminal", "tools": ["bash"]},
-    {"toolset": "file", "tools": ["read", "write", "edit"]},
-    {"toolset": "search", "tools": ["glob", "grep"]},
-    {"toolset": "ast", "tools": ["ast_grep", "ast_edit"]},
-    {"toolset": "lsp", "tools": ["lsp"]},
-    {"toolset": "debug", "tools": ["debug"]},
-    {"toolset": "eval", "tools": ["eval"]},
-    {"toolset": "image", "tools": ["inspect_image", "show_image"]},
-    {"toolset": "web", "tools": ["web_search", "web_extract"]},
-    {"toolset": "browser", "tools": ["browse", "screenshot"]},
-    {"toolset": "github", "tools": ["github"]},
-    {"toolset": "agents", "tools": ["ask"]},
-    {"toolset": "orchestration", "tools": ["delegate", "preset_create", "subagent_list", "subagent_message", "subagent_interrupt"]},
-    {"toolset": "plan", "tools": ["todo"]},
-    {"toolset": "memory", "tools": ["memory_edit", "retain", "recall", "reflect"]},
-    {"toolset": "skills", "tools": ["skill_list", "skill_load", "manage_skill"]},
-    {"toolset": "toolbuilder", "tools": ["tool_create", "tool_list", "tool_remove"]},
-]

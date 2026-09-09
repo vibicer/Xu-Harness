@@ -28,7 +28,7 @@ class SkillListTool(Tool):
     }
 
     async def run(self, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
-        rows = ctx.skills.list()
+        rows = ctx.skills.list(session_id=ctx.session_id or None)
         if not rows:
             return ToolResult.ok("No skills available.")
         lines = [f"- {r['id']}  [{r['state']}]  {r['name']} — {r['desc']}" for r in rows]
@@ -57,6 +57,8 @@ class SkillLoadTool(Tool):
         sid = args.get("id")
         if not sid or not isinstance(sid, str):
             return ToolResult.err("skill_load requires an 'id' string.")
+        if ctx.session_id and ctx.skills.session_overrides(ctx.session_id).get(sid) is False:
+            return ToolResult.err(f"skill disabled for this session: {sid}")
         try:
             body = ctx.skills.load(sid)
         except (KeyError, FileNotFoundError, ValueError) as exc:

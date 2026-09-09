@@ -25,5 +25,12 @@ export function MemoryMixin<T extends Ctor<StoreCoreBase>>(Base: T) {
       await this.client.call("memory.delete", { id });
       this.memories = this.memories.filter((m) => m.id !== id);
     }
+
+    /** Whole-file editor: one paragraph per entry; the brain diffs positionally. */
+    async replaceMemories(paragraphs: string[]): Promise<MemoryEntry[]> {
+      const got = await this.client.call<{ entries: MemoryEntry[] }>("memory.replace_all", { entries: paragraphs });
+      this.memories = got.entries;
+      return got.entries;
+    }
   };
 }

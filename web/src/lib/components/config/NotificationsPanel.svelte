@@ -70,6 +70,16 @@
         </div>
       </div>
       <div class="cfg-row">
+        <div class="label">awaiting input<small>the agent is asking for approval or an answer</small></div>
+        <div class="ctrl">
+          <label class="toggle">
+            <input type="checkbox" aria-label="notify when the agent is waiting for your input" checked={notifySettings.awaitInput} onchange={() => setNotify({ awaitInput: !notifySettings.awaitInput })} />
+            <span class="track"></span>
+            <span class="thumb"></span>
+          </label>
+        </div>
+      </div>
+      <div class="cfg-row">
         <div class="label">only when Xu unfocused<small>skip response alerts while you're typing in Xu</small></div>
         <div class="ctrl">
           <label class="toggle">

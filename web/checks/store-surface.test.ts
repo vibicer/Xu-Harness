@@ -234,24 +234,27 @@ declared.set(entry, new Set([...declared.get(entry)!, ...moduleExports(readFileS
 //    a D2-scale decision, not a side effect.
 const PINNED = [
   "activeCustomLayout", "activePersona", "addMemory", "addProvider", "allThemes",
-  "applyNow", "approvalModeCycle", "approvals", "avatar", "brain", "BUILTIN_THEMES",
-  "cancelQueued", "client", "closeSession", "commitSessionTabs", "compactionResult",
-  "compressingSessions", "compressSession", "config", "connected", "createTheme",
+  "applyNow", "approvalModeCycle", "approvals", "avatar", "bgfx", "BUILTIN_THEMES",
+  "BuiltinViewName", "brain", "cancelQueued", "client", "closeSession",
+  "commitSessionTabs", "compactionResult", "compressingSessions", "compressSession",
+  "config", "connected", "createTheme",
   "CustomLayout", "customLayouts", "customThemes", "cycleApprovalMode", "deleteMemory",
   "deletePersona", "deletePreset", "deleteProvider", "deleteSession", "deleteTheme",
-  "draft", "dragSessionTabOver", "dropins", "EMPTY_DRAFT", "getPersona", "grantNotify",
+  "draft", "dragSessionTabOver", "dropins", "EMPTY_DRAFT", "getPersona", "glass", "grantNotify",
   "interruptSubagent", "isBusy", "isCompressing", "layout", "LayoutId", "listDirs",
   "listSessions", "loadSkillBody", "memories", "messages", "models", "moveSessionTab",
   "newSession", "notify", "notifyPerm", "onboarded", "openSession", "openSessionIds",
   "PALETTE", "pendingApply", "personas", "plugins", "pluginThemes", "providers",
   "queued", "refreshConfig", "refreshMemory", "refreshPersonas", "refreshPlugins",
-  "refreshPresets", "refreshProviders", "refreshSkills", "refreshSubagents",
+  "replaceMemories",
+  "refreshPresets", "refreshProviders", "refreshSessionSkills", "refreshSessionToolsets",
+  "refreshSkills", "refreshSubagents",
   "refreshTodo", "refreshToolsets", "reloadPlugins", "renameSession", "renameTheme",
   "replyAsk", "requestSubRunId", "resolveApproval", "saveConfig", "savePersona",
-  "send", "session", "sessions", "setActivePersona", "setApprovalMode", "setAvatar",
-  "setCustomLayout", "setCwd", "setDropinEnabled", "setLayout", "setModel",
+  "send", "session", "sessionDropins", "sessionSkills", "sessionToolsets", "sessions", "setActivePersona", "setApprovalMode", "setAvatar",
+  "setBgfx", "setCustomLayout", "setCwd", "setDropinEnabled", "setGlass", "setLayout", "setModel",
   "setNotify", "setPersona", "setPluginEnabled", "setPluginSetting",
-  "setProviderEnabled", "setRules", "setSessionPreset", "setSkill", "setTheme",
+  "setProviderEnabled", "setRules", "setSessionDropinEnabled", "setSessionPreset", "setSessionSkill", "setSessionToolEnabled", "setSkill", "setTheme",
   "setToolEnabled", "setView", "shiftSessionTab", "skills", "spawnSubagent", "state",
   "status", "steerQueue", "stop", "subagentActivity", "subagentActivityUpdate", "subagents",
   "subRuns", "switchSession", "testNotify", "testProvider", "theme", "ThemePreset",
@@ -279,7 +282,7 @@ assert.deepEqual(
 //    silent side effect of a copy-paste.
 const HOMES: Record<string, string[]> = {
   "store.svelte.ts": [
-    "BUILTIN_THEMES", "CustomLayout", "EMPTY_DRAFT", "LayoutId", "PALETTE",
+    "BUILTIN_THEMES", "BuiltinViewName", "CustomLayout", "EMPTY_DRAFT", "LayoutId", "PALETTE",
     "ThemePreset", "TurnDraft", "ViewName", "XuBrainStore",
     "approvalModeCycle", "avatar", "brain", "cancelQueued",
     "closeSession", "commitSessionTabs", "compactionResult",
@@ -295,9 +298,9 @@ const HOMES: Record<string, string[]> = {
     "turns", "view",
   ],
   "store/appearance.svelte.ts": [
-    "activeCustomLayout", "allThemes", "applyNow", "createTheme",
-    "customLayouts", "customThemes", "deleteTheme", "layout", "pendingApply",
-    "pluginThemes", "renameTheme", "setCustomLayout", "setLayout", "setTheme",
+    "activeCustomLayout", "allThemes", "applyNow", "bgfx", "createTheme",
+    "customLayouts", "customThemes", "deleteTheme", "glass", "layout", "pendingApply",
+    "pluginThemes", "renameTheme", "setBgfx", "setCustomLayout", "setGlass", "setLayout", "setTheme",
     "theme", "themes", "updateThemeColors",
   ],
   "store/approvals.svelte.ts": ["approvals", "replyAsk", "resolveApproval"],
@@ -307,7 +310,7 @@ const HOMES: Record<string, string[]> = {
   //  every-file-is-a-key check below still wants it listed.
   "store/events.svelte.ts": [],
   "store/memory.svelte.ts": [
-    "addMemory", "deleteMemory", "memories", "refreshMemory", "updateMemory",
+    "addMemory", "deleteMemory", "memories", "refreshMemory", "replaceMemories", "updateMemory",
   ],
   "store/personas.svelte.ts": [
     "activePersona", "deletePersona", "getPersona", "personas",
@@ -325,7 +328,8 @@ const HOMES: Record<string, string[]> = {
     "refreshProviders", "setModel", "setProviderEnabled", "testProvider",
   ],
   "store/skills.svelte.ts": [
-    "loadSkillBody", "refreshSkills", "setSkill", "skills",
+    "loadSkillBody", "refreshSessionSkills", "refreshSkills", "sessionSkills",
+    "setSessionSkill", "setSkill", "skills",
   ],
   "store/subagents.svelte.ts": [
     "interruptSubagent", "refreshSubagents", "refreshTodo", "requestSubRunId",
@@ -333,8 +337,9 @@ const HOMES: Record<string, string[]> = {
     "subagents", "todos",
   ],
   "store/tools.svelte.ts": [
-    "dropins", "refreshToolsets", "setDropinEnabled", "setToolEnabled",
-    "toolsets",
+    "dropins", "refreshSessionToolsets", "refreshToolsets", "sessionDropins",
+    "sessionToolsets", "setDropinEnabled", "setSessionDropinEnabled",
+    "setSessionToolEnabled", "setToolEnabled", "toolsets",
   ],
 };
 

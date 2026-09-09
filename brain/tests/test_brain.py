@@ -12,6 +12,7 @@ import sys
 import tempfile
 import time
 from unittest import mock
+from unittest.mock import patch
 from pathlib import Path
 
 import pytest
@@ -706,6 +707,32 @@ class TestDataModuleRpc:
         assert got["entries"][0]["badge"] == "user-edited"
         self._call(app, "memory.delete", {"id": got["entries"][0]["id"]})
         assert self._call(app, "memory.list")["entries"] == []
+
+    def test_memory_replace_all_diffs_positionally(self, data_home):
+        """Whole-file editor: update-in-place, delete-on-removal, append-new,
+        and untouched paragraphs keep their badge."""
+        from xu_brain.core.runtime import build_app
+        app = build_app(data_home)
+        # seed: one auto-captured entry (from-session) + one user entry
+        app.memory.append("auto fact", badge="from-session")
+        got = self._call(app, "memory.add", {"text": "user fact"})
+        assert [e["badge"] for e in got["entries"]] == ["from-session", "user-edited"]
+
+        # edit the first, keep the second verbatim, add a third
+        got = self._call(app, "memory.replace_all", {
+            "entries": ["auto fact EDITED", "user fact", "brand new"],
+        })
+        entries = got["entries"]
+        assert [e["text"] for e in entries] == ["auto fact EDITED", "user fact", "brand new"]
+        assert [e["badge"] for e in entries] == ["user-edited", "user-edited", "user-edited"]
+
+        # delete the middle paragraph, blank one out
+        got = self._call(app, "memory.replace_all", {"entries": ["auto fact EDITED", "", "brand new"]})
+        assert [e["text"] for e in got["entries"]] == ["auto fact EDITED", "brand new"]
+
+        # empty list wipes everything
+        got = self._call(app, "memory.replace_all", {"entries": []})
+        assert got["entries"] == []
 
     def test_memory_add_rejects_blank(self, data_home):
         from xu_brain.core.runtime import build_app
@@ -1681,7 +1708,7 @@ class TestLoopReasoning:
             resolve=lambda _model, _p=None: ("provider", "model"),
             chat_stream=self._reasoning_stream,
         )
-        agent.registry = SimpleNamespace(schemas_for_model=lambda: [], reset_breakers=lambda: None)
+        agent.registry = SimpleNamespace(schemas_for_model=lambda _s=None: [], reset_breakers=lambda: None)
         agent._build_messages = lambda _session, node=None: []
 
         async def noop(*_args, **_kwargs):
@@ -1761,7 +1788,7 @@ class TestLoopReasoning:
             resolve=lambda _model, _p=None: ("provider", "model"),
             chat_stream=flaky_stream,
         )
-        agent.registry = SimpleNamespace(schemas_for_model=lambda: [], reset_breakers=lambda: None)
+        agent.registry = SimpleNamespace(schemas_for_model=lambda _s=None: [], reset_breakers=lambda: None)
         agent._build_messages = lambda _session, node=None: []
 
         async def noop(*_args, **_kwargs):
@@ -1819,7 +1846,7 @@ class TestLoopReasoning:
             resolve=lambda model, _p=None: (SimpleNamespace(id="prov"), model) if model else None,
             chat_stream=stream,
         )
-        agent.registry = SimpleNamespace(schemas_for_model=lambda: [], reset_breakers=lambda: None)
+        agent.registry = SimpleNamespace(schemas_for_model=lambda _s=None: [], reset_breakers=lambda: None)
         agent._build_messages = lambda _session, node=None: []
 
         async def noop(*_args, **_kwargs):
@@ -1881,7 +1908,7 @@ class TestLoopReasoning:
             resolve=lambda model, _p=None: (SimpleNamespace(id="prov"), model) if model == "still-here" else None,
             chat_stream=stream,
         )
-        agent.registry = SimpleNamespace(schemas_for_model=lambda: [], reset_breakers=lambda: None)
+        agent.registry = SimpleNamespace(schemas_for_model=lambda _s=None: [], reset_breakers=lambda: None)
         agent._build_messages = lambda _session, node=None: []
 
         async def noop(*_args, **_kwargs):
@@ -1979,7 +2006,7 @@ class TestToolHistory:
             return SimpleNamespace(output="out.txt", error=False, raw="")
 
         agent.registry = SimpleNamespace(
-            schemas_for_model=lambda: [], reset_breakers=lambda: None, run=run_tool)
+            schemas_for_model=lambda _s=None: [], reset_breakers=lambda: None, run=run_tool)
 
         sess = store.create(cwd=str(data_home))
 
@@ -2080,7 +2107,7 @@ class TestQueueSend:
             return SimpleNamespace(output="out.txt", error=False, raw="")
 
         agent.registry = SimpleNamespace(
-            schemas_for_model=lambda: [], reset_breakers=lambda: None, run=run_tool)
+            schemas_for_model=lambda _s=None: [], reset_breakers=lambda: None, run=run_tool)
 
         sess = store.create(cwd=str(data_home))
 
@@ -2153,7 +2180,7 @@ class TestQueueSend:
             return SimpleNamespace(output="out.txt", error=False, raw="")
 
         agent.registry = SimpleNamespace(
-            schemas_for_model=lambda: [], reset_breakers=lambda: None, run=run_tool)
+            schemas_for_model=lambda _s=None: [], reset_breakers=lambda: None, run=run_tool)
 
         sess = store.create(cwd=str(data_home))
 
@@ -2236,7 +2263,7 @@ class TestQueueSend:
             return SimpleNamespace(output="out.txt", error=False, raw="")
 
         agent.registry = SimpleNamespace(
-            schemas_for_model=lambda: [], reset_breakers=lambda: None, run=run_tool)
+            schemas_for_model=lambda _s=None: [], reset_breakers=lambda: None, run=run_tool)
 
         sess = store.create(cwd=str(data_home))
 
@@ -2565,6 +2592,31 @@ class TestFileEdit:
             {"patch": f"[t.txt#{tag}]\nPUT >1:\n+NEW\nPUT 3:\n+SURE"}, ctx))
         assert not res.error
         assert p.read_text() == "a\nNEW\nb\nSURE\nd\n"
+    def test_edit_tolerates_leading_fence_and_blank_lines(self, data_home):
+        """Models wrap the patch in a markdown code fence / stray newlines.
+        That must edit cleanly instead of erroring (the old bare error made
+        models retry the identical malformed patch in a loop)."""
+        from xu_brain.features.tools import file as F
+        p = data_home / "t.txt"
+        p.write_text("a\nb\nc\n", "utf-8")
+        ctx = self._ctx(data_home)
+        tag = F._snapshot_tag("a\nb\nc\n")
+        res = asyncio.run(F.edit.run(
+            {"patch": f"```python\n\n[t.txt#{tag}]\nPUT 2:\n+X2\n```"}, ctx))
+        assert not res.error
+        assert p.read_text() == "a\nX2\nc\n"
+
+    def test_edit_header_error_shows_first_line(self, data_home):
+        """A truly malformed header must echo the offending line so the model
+        can self-correct in one retry instead of guessing."""
+        from xu_brain.features.tools import file as F
+        p = data_home / "t.txt"
+        p.write_text("a\nb\n", "utf-8")
+        ctx = self._ctx(data_home)
+        res = asyncio.run(F.edit.run(
+            {"patch": "PUT 1:\n+X"}, ctx))
+        assert res.error
+        assert "PUT 1:" in (res.output or "")
 
     def test_edit_cut_then_edit_deleted_line_errors(self, data_home):
         """A later op referencing a line a prior CUT deleted must raise, not
@@ -3389,7 +3441,8 @@ class TestCompactionTranscriptRows:
                              add_display=lambda sid, msgs: None)
         agent.config = SNS(get=lambda _key, default=None: default,
                            resolve_persona_text=lambda sid: None,
-                           session_rules=lambda sid: [])
+                           session_rules=lambda sid: [],
+                           session_skill_overrides=lambda sid: {})
         return agent, sess
 
     def test_success_row_carries_size_stats(self):
@@ -3434,7 +3487,7 @@ class TestCompactionTranscriptRows:
         import asyncio
         agent, sess = self._agent()
         from types import SimpleNamespace as SNS
-        agent.skills = SNS(list=lambda: [], load=lambda sid: "", match=lambda text: [])
+        agent.skills = SNS(list=lambda all=False: [], load=lambda sid: "", match=lambda text: [])
         agent.memory = SNS(reflect=lambda: None)
         agent.data_home = __import__("pathlib").Path("/nonexistent")
         sent = agent._build_messages(sess)
@@ -3506,11 +3559,12 @@ class TestContextBudget:
             get=lambda key, default=None: budget if key == "context_skill_budget" else default,
             resolve_persona_text=lambda sid: None,
             session_rules=lambda sid: [],
+            session_skill_overrides=lambda sid: {},
         )
         agent.data_home = __import__("pathlib").Path("/nonexistent")
         # two LOADED skills, one oversized
         agent.skills = SNS(
-            list=lambda: [{"state": "LOADED", "id": "a"}, {"state": "LOADED", "id": "b"}],
+            list=lambda all=False: [{"state": "LOADED", "id": "a"}, {"state": "LOADED", "id": "b"}],
             load=lambda sid: f"# skill {sid}\n" + big,
         )
         agent.memory = SNS(reflect=lambda: "# memory\nmem")
@@ -3542,10 +3596,11 @@ class TestContextBudget:
             get=lambda key, default=None: 120 if key == "context_skill_budget" else default,
             resolve_persona_text=lambda sid: None,
             session_rules=lambda sid: [],
+            session_skill_overrides=lambda sid: {},
         )
         agent.data_home = __import__("pathlib").Path("/nonexistent")
         agent.skills = SNS(
-            list=lambda: [{"state": "LOADED", "id": "ambient"}],
+            list=lambda all=False: [{"state": "LOADED", "id": "ambient"}],
             load=lambda sid: f"# skill: {sid}\n" + "z" * 300,
         )
         # auto-match returns 'auto-skill' which is small
@@ -3738,6 +3793,29 @@ class TestBrowserToolset:
         monkeypatch.delenv("XU_BROWSER_BIN", raising=False)
         monkeypatch.setenv("PATH", str(tmp_path))
         assert BrowserManager.binary() == str(real)
+
+    def test_chrome_candidate_preferred_from_path(self, monkeypatch, tmp_path):
+        from xu_brain.features.tools.browser import BrowserManager
+        monkeypatch.delenv("XU_BROWSER_BIN", raising=False)
+        chrome_stable = tmp_path / "google-chrome-stable"
+        chrome_stable.write_text("#!/bin/sh\n")
+        chrome_stable.chmod(0o755)
+        chr_ = tmp_path / "chrome"
+        chr_.write_text("#!/bin/sh\n")
+        chr_.chmod(0o755)
+        monkeypatch.setenv("PATH", str(tmp_path))
+        # First candidate (google-chrome-stable) wins over a later "chrome".
+        assert BrowserManager.binary() == str(chrome_stable)
+
+    def test_spawn_args_headless_chrome(self, tmp_path):
+        from xu_brain.features.tools.browser import BrowserManager
+        udd = tmp_path / "profile"
+        args = BrowserManager._spawn_args("/usr/bin/google-chrome-stable", 9224, udd)
+        assert args[0] == "/usr/bin/google-chrome-stable"
+        assert "--headless=new" in args
+        assert "--remote-debugging-port=9224" in args
+        assert f"--user-data-dir={udd}" in args
+
 
     @pytest.mark.asyncio
     async def test_connect_mode_adopts_external_endpoint(self, monkeypatch):
@@ -4005,6 +4083,71 @@ class TestCdpClient:
             await server.wait_closed()
         assert "Emulation.setUserAgentOverride" not in events
 
+
+class TestBrowserStage:
+    """The shared stage: browse + screenshot drive one persistent page."""
+
+    def _reset(self):
+        from xu_brain.features.tools.browser import BrowserManager
+        BrowserManager._stage_client = None
+        BrowserManager._stage_sid = None
+        BrowserManager._ua = None
+
+    @staticmethod
+    def _stage_handler_factory(events: list, pushes: list):
+        async def handler(ws):
+            async for raw in ws:
+                msg = json.loads(raw)
+                mid, method, params = msg.get("id"), msg.get("method"), msg.get("params") or {}
+                events.append(method)
+                if method == "Target.createTarget":
+                    out = {"id": mid, "result": {"targetId": "t-1"}}
+                elif method == "Target.attachToTarget":
+                    out = {"id": mid, "result": {"sessionId": "s-1"}}
+                elif method == "Page.startScreencast":
+                    pushes.append("start")
+                    out = {"id": mid, "result": {}}
+                elif method == "Page.stopScreencast":
+                    pushes.append("stop")
+                    out = {"id": mid, "result": {}}
+                elif method == "Input.dispatchMouseEvent" or method == "Input.dispatchKeyEvent":
+                    pushes.append((method, params))
+                    out = {"id": mid, "result": {}}
+                elif "readyState" in (params.get("expression") or ""):
+                    out = {"id": mid, "result": {"result": {"value": "complete"}}}
+                elif ".length" in (params.get("expression") or ""):
+                    out = {"id": mid, "result": {"result": {"value": 3}}}
+                elif "document.title" in (params.get("expression") or ""):
+                    out = {"id": mid, "result": {"result": {"value": "T"}}}
+                else:
+                    out = {"id": mid, "result": {}}
+                await ws.send(json.dumps(out))
+        return handler
+
+    @pytest.mark.asyncio
+    async def test_stage_is_shared_and_reused(self):
+        from xu_brain.features.tools.browser import BrowserManager, CDPClient
+        from unittest.mock import patch
+        self._reset()
+        events: list = []
+        pushes: list = []
+        port, server = await TestCdpClient._serve(
+            self._stage_handler_factory(events, pushes))
+        try:
+            async def fake_ensure(*a, **k):
+                return f"ws://127.0.0.1:{port}"
+            with patch.object(BrowserManager, "ensure", fake_ensure):
+                c1, s1 = await BrowserManager.stage()
+                c2, s2 = await BrowserManager.stage()
+                assert c1 is c2 and s1 == s2 == "s-1"
+                await BrowserManager.shutdown()
+        finally:
+            server.close()
+            await server.wait_closed()
+        # One page target, one attach — not one per call.
+        assert events.count("Target.createTarget") == 1
+
+
 class TestProviderEnabledAndPin:
     """provider.enabled gating + provider-qualified model resolution."""
 
@@ -4228,7 +4371,7 @@ class TestEmptyTextGuard:
                       MemoryStore(data_home), SkillsEngine(data_home),
                       PluginBus(data_home), config)
         agent.registry = SimpleNamespace(
-            schemas_for_model=lambda: [], reset_breakers=lambda: None)
+            schemas_for_model=lambda _s=None: [], reset_breakers=lambda: None)
         return store, agent
 
     def test_thinking_only_turn_persists_error_marker(self, data_home):
@@ -4310,7 +4453,7 @@ class TestCrashStatus:
                       MemoryStore(data_home), SkillsEngine(data_home),
                       PluginBus(data_home), config)
         agent.registry = SimpleNamespace(
-            schemas_for_model=lambda: [], reset_breakers=lambda: None)
+            schemas_for_model=lambda _s=None: [], reset_breakers=lambda: None)
 
         async def stream(provider, model, messages, tools, max_tokens=None, signal=None):
             yield StreamEvent(reasoning="thinking before the crash")

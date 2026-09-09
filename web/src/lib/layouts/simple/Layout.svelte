@@ -4,6 +4,7 @@
   import { brain } from "../../store.svelte";
   import Chat from "../../components/Chat.svelte";
   import AgentState from "../../components/AgentState.svelte";
+  import type { ViewName } from "../../store.svelte";
   import SessionsView from "../../components/SessionsView.svelte";
   import ConfigView from "../../components/ConfigView.svelte";
   import LogsView from "../../components/LogsView.svelte";
@@ -11,12 +12,21 @@
   import Toasts, { toast } from "../../components/Toasts.svelte";
   import AboutPanel from "../../components/AboutPanel.svelte";
   import Icon from "../../components/Icon.svelte";
-  import { VIEW_ICONS } from "../../icons";
+  import { VIEW_ICONS, viewIcon } from "../../icons";
+  import { pluginViewGuard, pluginViewName, pluginViews } from "../../plugin-views.svelte";
+  import PluginSlot from "../../components/PluginSlot.svelte";
   import "./simple.css";
   import { createTabDrag } from "../../tab-drag.svelte";
 
   // Tab order is a user preference, so the strip is draggable (Alt+←/→ too).
   const drag = createTabDrag();
+
+  /** The open view's plugin, or null for a built-in — mirrors the default
+   *  layout's dock-driven slot, so a plugin view behaves the same here. */
+  const pluginView = $derived(pluginViewName(brain.view));
+
+  // A plugin view can vanish while it is open — land on the chat.
+  $effect(() => pluginViewGuard(brain));
 
   /** Same view set, order and names as every other layout's menu; the glyph
    *  comes from the shared VIEW_ICONS map so the sidebar and the default
@@ -28,7 +38,12 @@
     ["logs", "Logs"],
   ] as const;
 
-  function titleFor(view: string): string {
+  function titleFor(view: ViewName): string {
+    const plugin = pluginViewName(view);
+    if (plugin !== null) {
+      const p = pluginViews(brain.plugins).find((x) => x.name === plugin);
+      return p?.ui?.label ?? p?.name ?? "Xu";
+    }
     return nav.find((item) => item[0] === view)?.[1] ?? "Xu";
   }
 
@@ -138,6 +153,14 @@
             <span aria-hidden="true"><Icon name={VIEW_ICONS[item[0]]} size={18} /></span><span>{item[1]}</span>
           </button>
         {/each}
+
+        <!-- Plugin-contributed views ride after the built-ins, same shape. -->
+        {#each pluginViews(brain.plugins) as p (p.name)}
+          {@const view = `plugin:${p.name}` as ViewName}
+          <button class:active={brain.view === view} aria-current={brain.view === view ? "page" : undefined} onclick={() => brain.setView(view)}>
+            <span aria-hidden="true"><Icon name={viewIcon(view, brain.plugins)} size={18} /></span><span>{p.ui?.label ?? p.name}</span>
+          </button>
+        {/each}
       </nav>
     </aside>
 
@@ -229,6 +252,8 @@
             <ConfigView embed />
           {:else if brain.view === "logs"}
             <LogsView />
+          {:else if pluginView !== null}
+            <PluginSlot mount="view" only={pluginView} chrome="plugin-view" />
           {/if}
         </div>
       {/if}

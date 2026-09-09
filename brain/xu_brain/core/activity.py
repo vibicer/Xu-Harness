@@ -16,7 +16,7 @@ import sys
 import time
 from collections import deque
 from types import FrameType
-from typing import Any, Callable
+from typing import Any
 
 LOG_CAP = 1000
 _LEVELS = frozenset({"debug", "info", "warn", "error"})

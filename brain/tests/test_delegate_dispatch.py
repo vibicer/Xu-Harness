@@ -108,7 +108,7 @@ def test_tool_calls_are_dispatched_whatever_the_stop_reason(finish):
         return ToolResult.ok("the real result")
 
     agent.registry = SimpleNamespace(
-        schemas_for_model=lambda: [], reset_breakers=lambda: None, run=run_tool)
+        schemas_for_model=lambda _s=None: [], reset_breakers=lambda: None, run=run_tool)
 
     result = _run_loop(agent)
 
@@ -128,7 +128,7 @@ def test_plain_stop_without_tool_calls_still_ends_the_turn():
 
     agent = _loop_agent(stream)
     agent.registry = SimpleNamespace(
-        schemas_for_model=lambda: [], reset_breakers=lambda: None)
+        schemas_for_model=lambda _s=None: [], reset_breakers=lambda: None)
 
     result = _run_loop(agent)
 
@@ -231,7 +231,7 @@ def test_rejected_delegate_call_leaves_no_ghost_run():
         return ToolResult.err("no squad member 'nobody'")
 
     agent.registry = SimpleNamespace(
-        schemas_for_model=lambda: [], reset_breakers=lambda: None, run=run_tool)
+        schemas_for_model=lambda _s=None: [], reset_breakers=lambda: None, run=run_tool)
 
     _run_loop(agent)
 

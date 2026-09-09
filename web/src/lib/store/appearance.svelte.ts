@@ -22,6 +22,41 @@ function hexToTriplet(hex: string): string {
   return `${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}`;
 }
 
+/** Glassmorphism FX: translucent surfaces + backdrop blur, riding on top of
+ *  whichever scheme is active (so it survives layout/theme switches). */
+interface GlassFX {
+  enabled: boolean;
+  /** backdrop blur radius for the chrome (dock, bars, composer) in px (0–32). */
+  blur: number;
+  /** chrome transparency as a percentage (0–60). */
+  tint: number;
+  /** backdrop blur radius for panels/windows (messages, state rows, modals) in px (0–32). */
+  panelBlur: number;
+  /** panel/window transparency as a percentage (0–60). */
+  panelTint: number;
+}
+
+/** Ambient background FX: full-viewport gradient blobs behind the shell. */
+interface BgFX {
+  enabled: boolean;
+  /** layer opacity, 0–100 (ambient-gradient fallback). */
+  intensity: number;
+  /** explicit accent hexes; empty = follow the active scheme's glow colors. */
+  c1: string;
+  c2: string;
+  /** wallpaper image as a data URL; empty = use the ambient gradient. */
+  wallpaper: string;
+  /** blur applied to the wallpaper image itself, in px (0–20). */
+  wallBlur: number;
+}
+
+/** Clamp a recovered persisted number, falling back when it's not a number (so
+ *  a hand-edited/garbage localStorage value can't break the UI). */
+function clampNum(v: unknown, min: number, max: number, fallback: number): number {
+  const n = typeof v === "number" && Number.isFinite(v) ? v : Number.NaN;
+  return Number.isNaN(n) ? fallback : Math.min(max, Math.max(min, n));
+}
+
 export function AppearanceMixin<T extends Ctor<StoreCoreBase>>(Base: T) {
   return class Appearance extends Base {
     // ---- appearance (Config → Themes): layout + compatible color schemes ----
@@ -31,6 +66,11 @@ export function AppearanceMixin<T extends Ctor<StoreCoreBase>>(Base: T) {
     customLayouts = $state<CustomLayout[]>([]);
     customThemes = $state<ThemePreset[]>([]);
     activeCustomLayout = $state<string | null>(null);
+/** Glass + ambient-background FX (Config → Themes). Persisted user toggles
+*  that ride on top of whichever layout/theme is active, so they survive
+*  scheme and layout switches. */
+glass = $state<GlassFX>({ enabled: false, blur: 16, tint: 30, panelBlur: 12, panelTint: 20 });
+bgfx = $state<BgFX>({ enabled: false, intensity: 55, c1: "", c2: "", wallpaper: "", wallBlur: 0 });
 
     /** Built-in + user presets. Plugin-contributed schemes are NOT in here: they
      *  live in `pluginThemes`, so they never reach `persistThemes` (a plugin owns
@@ -40,6 +80,11 @@ export function AppearanceMixin<T extends Ctor<StoreCoreBase>>(Base: T) {
     private readonly layoutKey = "xu.layout";
     private readonly themeKey = "xu.theme";
     private readonly themesKey = "xu.themes";
+private readonly glassKey = "xu.glass";
+private readonly bgfxKey = "xu.bgfx";
+private readonly wallpaperKey = "xu.wallpaper";
+/** Last wallpaper string actually written, so slider ticks skip the big write. */
+private wallpaperWritten: string | null = null;
 
     /** Schemes contributed by enabled plugins, flattened out of `plugin.list`.
      *  Ids are namespaced `plugin:<plugin>:<id>` so two plugins can both ship a
@@ -107,8 +152,69 @@ export function AppearanceMixin<T extends Ctor<StoreCoreBase>>(Base: T) {
           if (v) el.style.setProperty(`--${p.var}`, p.var.startsWith("glow-") ? hexToTriplet(v) : v);
         }
       }
+      this.applyFx();
     }
 
+
+    /** Ambient background + glass are FX that ride on top of the active scheme:
+     *  toggle the two classes and set the handful of CSS vars they read, without
+     *  re-running the full theme repaint (cheap enough for a live slider). */
+    private applyFx(): void {
+      const el = typeof document !== "undefined" ? document.documentElement : null;
+      const body = typeof document !== "undefined" ? document.body : null;
+      if (!el) return;
+      el.classList.toggle("glass-on", this.glass.enabled);
+      const wall = this.bgfx.enabled && this.bgfx.wallpaper;
+      body?.classList.toggle("bgfx-on", this.bgfx.enabled);
+      body?.classList.toggle("bgfx-wall", !!wall);
+      if (wall) el.style.setProperty("--bgfx-wall", `url("${wall}")`);
+      el.style.setProperty("--glass-blur", `${this.glass.blur}px`);
+      // The keep-vars are the opaque fraction surfaces keep (100 − transparency).
+      el.style.setProperty("--glass-keep", `${100 - this.glass.tint}%`);
+      // Panels/windows (messages, state rows, modals) get their own dials, so
+      // chrome and content glass can be tuned independently.
+      el.style.setProperty("--glass-panel-blur", `${this.glass.panelBlur}px`);
+      el.style.setProperty("--glass-panel-keep", `${100 - this.glass.panelTint}%`);
+      // Wallpaper's own blur softens the image itself.
+      el.style.setProperty("--bgfx-wall-blur", `${this.bgfx.wallBlur}px`);
+      // Background accents: an explicit override, else the active scheme's glow
+      // colors, so the layer recolors automatically on a theme switch.
+      const t = this.allThemes.find((x) => x.id === this.theme && (x.layout ?? "default") === this.layout);
+      el.style.setProperty("--bgfx-c1", this.bgfx.c1 || t?.colors["glow-mag"] || "#8bc7ff");
+      el.style.setProperty("--bgfx-c2", this.bgfx.c2 || t?.colors["glow-cyan"] || "#5fd4ff");
+      el.style.setProperty("--bgfx-intensity", `${this.bgfx.intensity / 100}`);
+    }
+
+    setGlass(patch: Partial<GlassFX>): void {
+      this.glass = { ...this.glass, ...patch };
+      this.persistGlass();
+      this.applyFx();
+    }
+
+    setBgfx(patch: Partial<BgFX>): void {
+      this.bgfx = { ...this.bgfx, ...patch };
+      this.persistBgfx();
+      this.applyFx();
+    }
+
+    private persistGlass(): void {
+      try { localStorage.setItem(this.glassKey, JSON.stringify(this.glass)); } catch { /* storage can be unavailable */ }
+    }
+
+    /** The wallpaper data URL is by far the biggest string here, so it lives in
+     *  its own key and is only rewritten when it actually changes. Without this
+     *  a slider drag fires dozens of setBgfx ticks a second, each re-writing
+     *  megabytes to localStorage — the UI visibly lags behind the thumb. */
+    private persistBgfx(): void {
+      try {
+        const { wallpaper, ...small } = this.bgfx;
+        localStorage.setItem(this.bgfxKey, JSON.stringify(small));
+        if (wallpaper === this.wallpaperWritten) return;
+        if (wallpaper) localStorage.setItem(this.wallpaperKey, wallpaper);
+        else localStorage.removeItem(this.wallpaperKey);
+        this.wallpaperWritten = wallpaper;
+      } catch { /* storage can be unavailable */ }
+    }
     /** Swap the one `<link>` carrying a plugin scheme's extra stylesheet.
      *  Only an active plugin theme with a `css` file gets one; everything else
      *  removes it, so a stale sheet can never outlive the scheme that asked for
@@ -337,6 +443,35 @@ export function AppearanceMixin<T extends Ctor<StoreCoreBase>>(Base: T) {
             this.theme = this.themes.find((t) => (t.layout ?? "default") === this.layout)?.id ?? "arcane";
           }
         } catch { /* corrupt browser state is ignored */ }
+        try {
+          const g = localStorage.getItem(this.glassKey);
+          if (g) {
+            const v: unknown = JSON.parse(g);
+            if (v && typeof v === "object") {
+              const o = v as Partial<GlassFX>;
+              this.glass = { enabled: !!o.enabled, blur: clampNum(o.blur, 0, 32, 16), tint: clampNum(o.tint, 0, 60, 30), panelBlur: clampNum(o.panelBlur, 0, 32, 12), panelTint: clampNum(o.panelTint, 0, 60, 20) };
+            }
+          }
+          const b = localStorage.getItem(this.bgfxKey);
+          if (b) {
+            const v: unknown = JSON.parse(b);
+            if (v && typeof v === "object") {
+              const o = v as Partial<BgFX>;
+              // Legacy: the wallpaper used to live inside this blob; prefer the
+              // dedicated key, fall back to the embedded one.
+              const wall = localStorage.getItem(this.wallpaperKey) ?? (typeof o.wallpaper === "string" ? o.wallpaper : "");
+              this.bgfx = {
+                enabled: !!o.enabled,
+                intensity: clampNum(o.intensity, 0, 100, 55),
+                c1: typeof o.c1 === "string" ? o.c1 : "",
+                c2: typeof o.c2 === "string" ? o.c2 : "",
+                wallpaper: wall,
+                wallBlur: clampNum(o.wallBlur, 0, 20, 0),
+              };
+              this.wallpaperWritten = wall;
+            }
+          }
+        } catch { /* corrupt fx state is ignored */ }
       }
 
       // Seed any builtin themes missing from this.themes (idempotent; new builtins ship on existing installs).

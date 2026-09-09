@@ -14,6 +14,8 @@ export interface NotifySettings {
   turnDone: boolean;
   /** a turn failed with an error */
   turnFailed: boolean;
+  /** the agent is waiting for your input (approval card or ask question) */
+  awaitInput: boolean;
   /** suppress response notifications while the Xu window has focus */
   onlyUnfocused: boolean;
   /** let the browser play its notification sound */
@@ -26,6 +28,7 @@ export const DEFAULT_NOTIFY: NotifySettings = {
   enabled: false,
   turnDone: true,
   turnFailed: true,
+  awaitInput: true,
   onlyUnfocused: true,
   sound: false,
 };

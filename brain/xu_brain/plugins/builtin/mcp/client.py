@@ -321,6 +321,3 @@ class StdioClient:
             return ""
         return " — stderr: " + " | ".join(self._stderr)
 
-    @property
-    def stderr_tail(self) -> list[str]:
-        return list(self._stderr)

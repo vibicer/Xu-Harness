@@ -16,7 +16,8 @@
 //     reads as "this row doesn't expand"
 //   * VIEW_ICONS totality — the same destination must not be a chat bubble in
 //     the dock and a house in the sidebar, which is what having two per-layout
-//     glyph tables caused
+//     glyph tables caused. Plugin views are excluded: their glyph comes from
+//     the manifest via `viewIcon`, whose fallback is pinned too
 //   * no glyph regressions — the emoji/box-drawing icons are the thing we
 //     removed; a new one is a new visual language
 //
@@ -118,19 +119,42 @@ function svelteFiles(dir: string): string[] {
   assert.ok(seen > 30, `expected the shell to use icons, found ${seen} literal names`);
 }
 
-// ---- 4. VIEW_ICONS covers every view, with registry keys
+// ---- 4. VIEW_ICONS covers every built-in view; plugin views resolve safely
 {
-  const views = readFileSync(join(root, "src/lib/store/shared.ts"), "utf8")
-    .match(/export type ViewName = ([^;]+);/)?.[1]
-    .match(/"(\w+)"/g)
-    ?.map((s) => s.slice(1, -1));
-  assert.ok(views?.length, "ViewName union not found");
+  const shared = readFileSync(join(root, "src/lib/store/shared.ts"), "utf8");
+  const union = shared.match(/export type ViewName = ([^;]+);/)?.[1] ?? "";
+  assert.ok(union, "ViewName union not found");
+  // `plugin:${string}` is the reserved spelling of a plugin-contributed view.
+  assert.match(union, /`plugin:\$\{string\}`/, "ViewName lost the `plugin:*` member");
+  // Built-ins only: a `plugin:*` key in the map cannot exist, because a
+  // plugin view names its own glyph.
+  assert.match(
+    shared,
+    /export type BuiltinViewName = Exclude<ViewName, `plugin:\$\{string\}`>/,
+    "BuiltinViewName must exclude the plugin member",
+  );
+
+  const views = union.match(/"(\w+)"/g)?.map((s) => s.slice(1, -1));
+  assert.ok(views?.length, "ViewName built-ins not found");
 
   const map = iconsSrc.split("export const VIEW_ICONS")[1];
   assert.ok(map, "VIEW_ICONS not exported — layouts would each invent a glyph table");
+  assert.match(
+    iconsSrc,
+    /export const VIEW_ICONS: Record<BuiltinViewName, IconName>/,
+    "VIEW_ICONS must be keyed by built-ins only",
+  );
   for (const view of views!) {
     assert.match(map, new RegExp(`\\b${view}:\\s*"[\\w-]+"`), `VIEW_ICONS has no ${view}`);
   }
+
+  // A plugin names a Lucide slug the shell cannot verify; the resolver must
+  // fall back to the puzzle rather than hand <Icon> a key it doesn't have.
+  // (Source text: icons.ts deep-imports Svelte components, so no Node import.)
+  const helper = iconsSrc.split("export function viewIcon")[1];
+  assert.ok(helper, "viewIcon not exported — plugin views need the safe resolver");
+  assert.match(helper, /in ICONS/, "viewIcon must check the registry before using a plugin slug");
+  assert.match(helper, /"puzzle"/, "viewIcon must fall back to the puzzle");
 
   // Both shipped layouts must read the shared map rather than a local one.
   for (const layout of ["default", "simple"]) {

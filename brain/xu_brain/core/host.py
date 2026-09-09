@@ -14,7 +14,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from ..api.manifest import Manifest, load_manifest
+from ..api.manifest import BUILTIN_UI_MOUNTS, Manifest, load_manifest
 from .bus import HookBus, HookHandle, _run_soon, log
 class PluginContextImpl:
     """Concrete :class:`PluginContext` handed to an plugin's ``activate(ctx)``.
@@ -191,17 +191,19 @@ class PluginHost:
         """Resolve a plugin's declared frontend file, or ``None``.
 
         The web server's only door into the plugins dir. Returns a path only
-        when the plugin is loaded, *enabled*, and ``filename`` is exactly a file
-        its manifest declared — its ``ui.module``, or the ``css`` of one of its
-        themes. Everything else in the package stays unreachable, and a disabled
-        plugin serves nothing at all.
+        when the plugin is loaded, *enabled*, and ``filename`` is exactly a
+        file its manifest declared — its ``ui.module``, one of its declared
+        ``ui.assets``, or the ``css`` of one of its themes. Everything else
+        in the package stays unreachable, and a disabled plugin serves
+        nothing at all.
         """
         if self._root is None:
             return None
         record = self._plugins.get(name)
         if not record or not record.get("enabled"):
             return None
-        declared = {(record.get("ui") or {}).get("module")}
+        ui = record.get("ui") or {}
+        declared = {ui.get("module")} | set(ui.get("assets") or [])
         declared |= {t.get("css") for t in record.get("themes") or []}
         if filename not in declared:
             return None
@@ -338,6 +340,20 @@ class PluginHost:
         manifest = load_manifest(pkg_dir / "manifest.json")
         if manifest is None:
             return
+        # Validation checks the mount's shape, not its membership (a layout
+        # plugin may offer spots the built-in shell doesn't know), so an
+        # unfamiliar-but-legal mount reaching here is fine — but it renders
+        # nowhere until some layout offers it, and that is worth one warning
+        # line, not a rejection. Validation stays pure; this is the host's
+        # call to make.
+        mount = (manifest.ui or {}).get("mount")
+        if mount and mount not in BUILTIN_UI_MOUNTS:
+            log.warning(
+                "plugin %s: mount %r is not offered by any built-in layout; "
+                "it renders only in a layout that offers it",
+                manifest.name,
+                mount,
+            )
         # A disabled plugin is still listed, but never activated.
         if not self._is_enabled(manifest.name):
             self._plugins[manifest.name] = self._record(manifest, enabled=False)

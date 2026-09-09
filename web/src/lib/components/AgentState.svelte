@@ -106,11 +106,13 @@
     if (!needle) return true;
     return fields.some((f) => f?.toLowerCase().includes(needle));
   }
+  // Agent State shows the ACTIVE SESSION's effective state (session overrides
+  // on top of the global defaults); Config → Skills/Tools edits the defaults.
   const filteredSkills = $derived(
-    brain.skills.filter((s) => matches(skillQ, s.name, s.id, s.desc, (s.keywords ?? []).join(" "))),
+    brain.sessionSkills.filter((s) => matches(skillQ, s.name, s.id, s.desc, (s.keywords ?? []).join(" "))),
   );
   const builtinToolsets = $derived(
-    brain.toolsets
+    brain.sessionToolsets
       .map((ts) => ({ ...ts, tools: ts.tools.filter((t) => !t.is_dropin) }))
       .filter((ts) => ts.tools.length > 0),
   );
@@ -120,7 +122,7 @@
       .filter((ts) => ts.tools.length > 0),
   );
   const filteredDropins = $derived(
-    brain.dropins.filter((d) => matches(toolQ, d.name, d.toolset, d.description)),
+    brain.sessionDropins.filter((d) => matches(toolQ, d.name, d.toolset, d.description)),
   );
 
   // While searching, expand every matching row so results are visible.
@@ -276,8 +278,8 @@
 
   // Fetch live data for whichever tab is active.
   $effect(() => {
-    if (tab === "skills") void brain.refreshSkills();
-    else if (tab === "tools") void brain.refreshToolsets();
+    if (tab === "skills") void brain.refreshSessionSkills();
+    else if (tab === "tools") void brain.refreshSessionToolsets();
   });
 
   // close the model/persona menus on any outside click
@@ -481,7 +483,7 @@
                     <span class="rules-preset-snippet">{[p.rules[0], p.rules[1]].filter(Boolean).join(" \u00b7 ") || "\u2014"}</span>
                   </button>
                   <button type="button" class="rules-preset-del" title="Delete preset" aria-label="Delete preset {p.name}"
-                    onclick={(e) => deleteRulePreset(p.id)}>&times;</button>
+                    onclick={() => deleteRulePreset(p.id)}>&times;</button>
                 </div>
               {/each}
             </div>
@@ -502,7 +504,7 @@
     </div>
     <div id="st-skills" class="stpane" class:active={tab === "skills"}>
       <input class="mini-input" type="search" placeholder="search skills…" bind:value={skillQ} aria-label="search skills" />
-      {#if brain.skills.length === 0}
+      {#if brain.sessionSkills.length === 0}
         <div class="strow"><div class="t">No skills installed</div></div>
       {:else if filteredSkills.length === 0}
         <div class="strow"><div class="t">No skills match "{skillQ}"</div></div>
@@ -523,7 +525,7 @@
                   type="checkbox"
                   checked={s.ambient}
                   disabled={presetActive}
-                  onchange={() => void brain.setSkill(s.id, !s.ambient)}
+                  onchange={() => void brain.setSessionSkill(s.id, !s.ambient)}
                 />
                 <span class="track"></span>
                 <span class="thumb"></span>
@@ -532,7 +534,7 @@
           </div>
         {/each}
       {/if}
-      <div class="stfoot">{filteredSkills.length}/{brain.skills.length} known</div>
+      <div class="stfoot">{filteredSkills.length}/{brain.sessionSkills.length} known</div>
     </div>
     <div id="st-tools" class="stpane" class:active={tab === "tools"}>
       <input class="mini-input" type="search" placeholder="search tools…" bind:value={toolQ} aria-label="search tools" />
@@ -554,7 +556,7 @@
                   type="checkbox"
                   checked={ts.enabled}
                   disabled={presetActive}
-                  onchange={() => void brain.setToolEnabled(ts.toolset, !ts.enabled)}
+                  onchange={() => void brain.setSessionToolEnabled(ts.toolset, !ts.enabled)}
                 />
                 <span class="track" ></span>
                 <span class="thumb" ></span>
@@ -597,7 +599,7 @@
                   type="checkbox"
                   checked={d.enabled}
                   disabled={presetActive}
-                  onchange={() => void brain.setDropinEnabled(d.name, !d.enabled)}
+                  onchange={() => void brain.setSessionDropinEnabled(d.name, !d.enabled)}
                 />
                 <span class="track" ></span>
                 <span class="thumb" ></span>
@@ -614,7 +616,7 @@
               </div>
             {/if}
           {/each}
-          {#if brain.dropins.length === 0}
+          {#if brain.sessionDropins.length === 0}
             <div class="strow"><div class="t">No custom tools — author one with tool_create.</div></div>
           {:else if filteredDropins.length === 0}
             <div class="strow"><div class="t">No custom tools match "{toolQ}"</div></div>

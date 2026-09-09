@@ -1,13 +1,11 @@
-"""browser toolset — an agent-owned headless Chrome.
+"""browser toolset — an agent-owned headless browser.
 
 The *agent* owns the browser. :class:`BrowserManager` lazily spawns one
-headless Chrome/Chromium process with a throwaway user profile and a CDP
-remote-debugging endpoint on a free port, keeps it alive across turns, and
-kills it (and cleans the profile) on shutdown — the user never touches it.
-No user-facing config field: the tools simply "work". The browser binary is
-resolved from ``XU_BROWSER_BIN`` or PATH (``google-chrome-stable``,
-``chromium``, …); unlike the old Obscura harness there is nothing to
-auto-install, so a missing binary is a clear error.
+headless Chrome/Chromium process on a free port, keeps it alive across turns,
+and kills it (and cleans its throwaway profile) on shutdown — the user never
+touches it. No user-facing config field: the tools simply "work". The browser
+binary is resolved from ``XU_BROWSER_BIN`` or PATH (``google-chrome-stable``,
+``chromium``, …); a missing binary is a clear error.
 
 Transport is the Chromium DevTools Protocol over one WebSocket to the
 browser-level endpoint discovered via ``GET /json/version``
@@ -45,7 +43,6 @@ import time
 import urllib.request
 from pathlib import Path
 from typing import Any
-
 import websockets
 
 from ...core.governance import ApprovalLevel
@@ -56,7 +53,7 @@ _IDLE = 0.15               # poll gap while waiting for document.readyState
 _START_TIMEOUT = 12.0      # seconds to wait for the CDP endpoint after spawn
 _BROWSER_WS_TIMEOUT = 10.0   # per-write / per-read timeout on the CDP socket
 _SETTLE_TIMEOUT = 3.0      # extra seconds to let a client-rendered page paint text
-_KILL_TIMEOUT = 3.0        # seconds to wait for the Chrome tree to die per signal
+_KILL_TIMEOUT = 3.0        # seconds to wait for the browser tree to die per signal
 
 # Throwaway profile dirs live in the temp dir under this prefix, each carrying an
 # owner marker so a later run can tell a live brain's profile from an orphan.
@@ -81,8 +78,8 @@ _TEXT_JS = (
 )
 _TEXT_LEN_JS = f"({_TEXT_JS}).trim().length"
 
-# Chrome/Chromium binaries searched on PATH (XU_BROWSER_BIN overrides first).
-_CHROME_CANDIDATES = (
+# Browser binaries searched on PATH (XU_BROWSER_BIN overrides first).
+_BROWSER_CANDIDATES = (
     "google-chrome-stable",
     "google-chrome",
     "chromium",
@@ -151,8 +148,9 @@ def _dehead(ua: str | None) -> str | None:
     return fixed if fixed != ua else None
 
 
+
 class BrowserManager:
-    """Owns the one headless Chrome the agent uses. Singleton (module-level):
+    """Owns the one headless browser the agent uses. Singleton (module-level):
     spawned on first use, reused across turns, terminated on shutdown.
 
     If ``XU_BROWSER_CDP_ENDPOINT`` is set, no process is spawned — the manager
@@ -161,7 +159,6 @@ class BrowserManager:
     """
 
     _proc: asyncio.subprocess.Process | None = None
-    _port: int | None = None
     _endpoint: str | None = None
     _udd: Path | None = None
     _lock: asyncio.Lock | None = None
@@ -172,6 +169,11 @@ class BrowserManager:
     # Process-group id of the spawned Chrome tree (== the parent's pid, since it
     # is spawned as a session leader). None in connect mode or on Windows.
     _pgid: int | None = None
+    # The stage: one persistent page the agent's tools and the shell modal
+    # share. The client stays connected across turns so the modal keeps a
+    # live view of the last page the agent (or the user) touched.
+    _stage_client: CDPClient | None = None
+    _stage_sid: str | None = None
 
     @staticmethod
     def _profiles_root() -> Path:
@@ -236,23 +238,76 @@ class BrowserManager:
 
     @staticmethod
     def binary() -> str | None:
-        """Resolve the Chrome/Chromium executable: ``XU_BROWSER_BIN`` env →
-        PATH. Returns ``None`` if nothing is found; never installs."""
+        """Resolve the browser executable: ``XU_BROWSER_BIN`` env → PATH
+        (Chrome/Chromium). Returns ``None`` if nothing
+        is found; never installs."""
         env = os.environ.get("XU_BROWSER_BIN")
         if env:
             p = Path(env)
             if p.exists():
                 return str(p)
             return None
-        for name in _CHROME_CANDIDATES:
+        for name in _BROWSER_CANDIDATES:
             p = shutil.which(name)
             if p:
                 return p
         return None
 
+    @staticmethod
+    def _spawn_args(bin_: str, port: int, udd: Path | None) -> list[str]:
+        """argv for a headless Chrome/Chromium on a throwaway profile."""
+        return [
+            bin_,
+            "--headless=new",
+            f"--remote-debugging-port={port}",
+            f"--user-data-dir={udd}",
+            "--no-first-run",
+            "--no-default-browser-check",
+            "--disable-gpu",
+            "--no-sandbox",
+            "--disable-dev-shm-usage",
+            f"--window-size={_VIEWPORT[0]},{_VIEWPORT[1]}",
+        ]
+
     @classmethod
     def endpoint(cls) -> str | None:
         return cls._endpoint
+
+    # ---------------------------------------------------------------- stage
+
+    @classmethod
+    async def stage(cls) -> tuple["CDPClient", str]:
+        """Return the shared (client, sessionId) of the stage page, creating
+        it on first use.
+
+        One page target, attached once, kept alive across turns so
+        ``browse`` and ``screenshot`` share a page. Recreated if the connection
+        died (browser restart, crash).
+        """
+        endpoint = await cls.ensure()
+        async with await cls._locker():
+            client = cls._stage_client
+            if client is not None and not client._closed:
+                return client, cls._stage_sid or ""
+            cls._reset_stage_locked()
+            client = CDPClient(endpoint)
+            await client.connect()
+            try:
+                cls._stage_sid = await client.new_page()
+            except Exception:
+                await client.close()
+                raise
+            cls._stage_client = client
+            return client, cls._stage_sid
+
+    @classmethod
+    def _reset_stage_locked(cls) -> None:
+        """Drop the stage (dead or being rebuilt). Caller holds the lock."""
+        client = cls._stage_client
+        cls._stage_client = None
+        cls._stage_sid = None
+        if client is not None and client._reader is not None:
+            client._reader.cancel()
 
     @classmethod
     async def _locker(cls) -> asyncio.Lock:
@@ -262,8 +317,8 @@ class BrowserManager:
 
     @classmethod
     async def ensure(cls) -> str:
-        """Return the browser-level CDP WebSocket endpoint, spawning a headless
-        Chrome on first use (or respawning if it died). Serialized so
+        """Return the browser-level CDP WebSocket endpoint, spawning a
+        headless browser on first use (or respawning if it died). Serialized so
         concurrent tool calls share one process."""
         async with await cls._locker():
             # Connect mode: an externally-provided CDP endpoint is adopted
@@ -277,51 +332,46 @@ class BrowserManager:
             bin_ = cls.binary()
             if not bin_:
                 raise BrowserError(
-                    "no Chrome/Chromium found — install one "
-                    "(google-chrome-stable / chromium) or set XU_BROWSER_BIN"
+                    "no browser found — install Chrome/Chromium "
+                    "(google-chrome-stable / chromium), or set XU_BROWSER_BIN"
                 )
-            # Recover from any previous brain that died without a shutdown.
+            # Recover from any previous brain that died without a shutdown
+            # (throwaway Chrome profile dirs).
             cls._sweep_orphans()
             port = _free_port()
             udd = Path(tempfile.mkdtemp(prefix=_PROFILE_PREFIX))
             cls._udd = udd
             proc = await asyncio.create_subprocess_exec(
-                bin_,
-                "--headless=new",
-                f"--remote-debugging-port={port}",
-                f"--user-data-dir={udd}",
-                "--no-first-run",
-                "--no-default-browser-check",
-                "--disable-gpu",
-                "--no-sandbox",
-                "--disable-dev-shm-usage",
-                f"--window-size={_VIEWPORT[0]},{_VIEWPORT[1]}",
+                *cls._spawn_args(bin_, port, udd),
                 stdout=asyncio.subprocess.DEVNULL,
                 stderr=asyncio.subprocess.DEVNULL,
                 # Own session → the parent is its group leader, so one killpg
-                # reaches every renderer/GPU/zygote helper Chrome forks.
+                # reaches every helper the browser forks.
                 start_new_session=True,
             )
             cls._proc = proc
-            cls._port = port
             # start_new_session makes the child its own group leader, so the
             # group id is its pid — no getpgid race against a fast exit.
+            cls._pgid = proc.pid if hasattr(os, "killpg") else None
+            if udd is not None:
+                cls._claim(udd)
+            cls._endpoint = await cls._wait_ready(port)
+            return cls._endpoint
             cls._pgid = proc.pid if hasattr(os, "killpg") else None
             cls._claim(udd)
             cls._endpoint = await cls._wait_ready(port)
             return cls._endpoint
-            return cls._endpoint
 
     @classmethod
     async def _wait_ready(cls, port: int) -> str:
-        """Poll ``/json/version`` until Chrome's CDP endpoint is up; return the
+        """Poll ``/json/version`` until the browser's CDP endpoint is up; return the
         browser-level ``webSocketDebuggerUrl``."""
         url = f"http://127.0.0.1:{port}/json/version"
         deadline = time.monotonic() + _START_TIMEOUT
         while time.monotonic() < deadline:
             if cls._proc is not None and cls._proc.returncode is not None:
                 raise BrowserError(
-                    "chrome exited during startup; check the binary "
+                    "browser exited during startup; check the binary "
                     f"({cls.binary()}) and XU_BROWSER_BIN"
                 )
             try:
@@ -333,14 +383,18 @@ class BrowserManager:
                     return ws
             except Exception:  # noqa: BLE001 — endpoint not up yet
                 await asyncio.sleep(0.3)
-        raise BrowserError("chrome CDP endpoint did not come up in time")
+        raise BrowserError("browser CDP endpoint did not come up in time")
 
     @classmethod
     async def shutdown(cls) -> None:
+        client = cls._stage_client
+        cls._stage_client = None
+        cls._stage_sid = None
+        if client is not None:
+            await client.close()
         proc = cls._proc
         pgid = cls._pgid
         cls._proc = None
-        cls._port = None
         cls._endpoint = None
         cls._ua = None
         cls._pgid = None
@@ -385,36 +439,80 @@ class BrowserManager:
 class CDPClient:
     """One browser-level CDP session. Connects to the spawned browser and
     drives pages via ``Target.createTarget`` + flattened
-    ``Target.attachToTarget``."""
+    ``Target.attachToTarget``.
+
+    A permanent reader task dispatches every incoming message: responses go
+    to the pending ``_send`` future with the matching id, events (no id) go
+    to ``on_event``. That is what makes the stage possible — concurrent
+    callers can share one connection without swallowing each other's
+    replies.
+    """
 
     def __init__(self, endpoint: str) -> None:
         self.endpoint = endpoint
         self._ws: Any = None
         self._msg_id = 0
+        self._pending: dict[int, asyncio.Future] = {}
+        self._reader: asyncio.Task | None = None
+        self._closed = False
+        # Sync callback for CDP events; may schedule async work internally.
+        self.on_event: Any = None
 
     async def connect(self) -> None:
         self._ws = await websockets.connect(
             self.endpoint, max_size=64 * 1024 * 1024, open_timeout=_BROWSER_WS_TIMEOUT
         )
+        self._closed = False
+        self._reader = asyncio.create_task(self._read_loop())
+
+    async def _read_loop(self) -> None:
+        try:
+            while True:
+                raw = await self._ws.recv()
+                try:
+                    msg = json.loads(raw)
+                except json.JSONDecodeError:
+                    continue
+                mid = msg.get("id")
+                if mid is not None:
+                    fut = self._pending.pop(mid, None)
+                    if fut is not None and not fut.done():
+                        if "error" in msg:
+                            fut.set_exception(
+                                RuntimeError(msg["error"].get("message", "cdp error"))
+                            )
+                        else:
+                            fut.set_result(msg.get("result", {}))
+                elif msg.get("method") and self.on_event is not None:
+                    try:
+                        self.on_event(msg)
+                    except Exception:  # noqa: BLE001 — never kill the reader
+                        pass
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 — connection died: fail every waiter
+            self._closed = True
+            for fut in self._pending.values():
+                if not fut.done():
+                    fut.set_exception(RuntimeError("browser connection closed"))
+            self._pending.clear()
 
     async def _send(
         self, method: str, params: dict[str, Any], session_id: str | None = None
     ) -> dict[str, Any]:
+        if self._ws is None or self._closed:
+            raise RuntimeError("browser connection closed")
         self._msg_id += 1
         msg: dict[str, Any] = {"id": self._msg_id, "method": method, "params": params or {}}
         if session_id:
             msg["sessionId"] = session_id
-        await asyncio.wait_for(self._ws.send(json.dumps(msg)), timeout=_BROWSER_WS_TIMEOUT)
-        while True:
-            raw = await asyncio.wait_for(self._ws.recv(), timeout=_BROWSER_WS_TIMEOUT)
-            try:
-                msgr = json.loads(raw)
-            except json.JSONDecodeError:
-                continue
-            if msgr.get("id") == self._msg_id:
-                if "error" in msgr:
-                    raise RuntimeError(msgr["error"].get("message", "cdp error"))
-                return msgr.get("result", {})
+        fut: asyncio.Future = asyncio.get_running_loop().create_future()
+        self._pending[self._msg_id] = fut
+        try:
+            await asyncio.wait_for(self._ws.send(json.dumps(msg)), timeout=_BROWSER_WS_TIMEOUT)
+            return await asyncio.wait_for(fut, timeout=_BROWSER_WS_TIMEOUT)
+        finally:
+            self._pending.pop(self._msg_id, None)
 
     async def new_page(self) -> str:
         """Create a page target and attach; returns its flattened sessionId.
@@ -506,18 +604,19 @@ class CDPClient:
         return base64.b64decode(b64) if b64 else b""
 
     async def close(self) -> None:
+        reader, self._reader = self._reader, None
+        if reader is not None:
+            reader.cancel()
+            try:
+                await reader
+            except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                pass
         if self._ws is not None:
             try:
                 await self._ws.close()
             finally:
                 self._ws = None
-
-
-async def _client() -> CDPClient:
-    endpoint = await BrowserManager.ensure()
-    client = CDPClient(endpoint)
-    await client.connect()
-    return client
+        self._closed = True
 
 
 class BrowseTool(Tool):
@@ -525,8 +624,9 @@ class BrowseTool(Tool):
     toolset = "browser"
     description = ("Open a URL in the agent's real (headless) browser and return "
                    "the rendered text — JS has executed. Use when a plain fetch "
-                   "returns a shell or empty page. Needs a Chrome/Chromium binary "
-                   "(or XU_BROWSER_CDP_ENDPOINT for an externally-launched browser).")
+                   "returns a shell or empty page. Needs a browser binary "
+                   "(Chrome/Chromium, or XU_BROWSER_CDP_ENDPOINT "
+                   "for an externally-launched browser).")
     approval = ApprovalLevel.NEVER
     schema = {
         "type": "object",
@@ -543,18 +643,15 @@ class BrowseTool(Tool):
             return ToolResult.err("url required")
         title = ""
         try:
-            client = await _client()
-            sid = await client.new_page()
-            try:
-                await client.navigate(url, sid)
-                text = await client.evaluate_text(sid, html=bool(args.get("html", False)))
-                # Only on the failure path: name the page so the next reader
-                # gets a diagnosis instead of a guess.
-                if not text.strip():
-                    title = await client.page_title(sid)
-            finally:
-                await client.detach_page(sid)
-                await client.close()
+            client, sid = await BrowserManager.stage()
+            await client.navigate(url, sid)
+            text = await client.evaluate_text(
+                sid, html=bool(args.get("html", False))
+            )
+            if not text.strip():
+                # Only on the failure path: name the page so the next
+                # reader gets a diagnosis instead of a guess.
+                title = await client.page_title(sid)
         except BrowserError as e:
             return ToolResult.err(f"browser unavailable: {e}")
         except Exception as e:  # noqa: BLE001
@@ -591,14 +688,11 @@ class ScreenshotTool(Tool):
         if not url:
             return ToolResult.err("url required")
         try:
-            client = await _client()
-            sid = await client.new_page()
-            try:
-                await client.navigate(url, sid)
-                png = await client.screenshot(sid, full_page=bool(args.get("full_page", False)))
-            finally:
-                await client.detach_page(sid)
-                await client.close()
+            client, sid = await BrowserManager.stage()
+            await client.navigate(url, sid)
+            png = await client.screenshot(
+                sid, full_page=bool(args.get("full_page", False))
+            )
         except BrowserError as e:
             return ToolResult.err(f"browser unavailable: {e}")
         except Exception as e:  # noqa: BLE001

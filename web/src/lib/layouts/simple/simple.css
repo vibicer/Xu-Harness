@@ -472,6 +472,10 @@
 .simple-shell #composer-foot .foot-group, .simple-shell #composer-foot .foot-status {
   border: 1px solid var(--border); border-radius: 99px; background: transparent; padding: 3px 11px;
 }
+
+/* Approval + git readouts render bare — flat text, no pill chrome. */
+.simple-shell #composer-foot .foot-group.approvals,
+.simple-shell #composer-foot .foot-status.git-wrap { border: 0; background: transparent; padding: 0; }
 .simple-shell #composer-foot .foot-label { font-size: 10px; font-weight: 650; letter-spacing: .06em; }
 .simple-shell #composer-foot .yolo-toggle { border: 0; padding: 0; color: var(--dim); font-size: 11px; font-weight: 650; }
 .simple-shell #composer-foot .yolo-toggle.on { border: 0; background: transparent; color: var(--amber); }
@@ -703,6 +707,43 @@ background: var(--surface-2); padding: 10px; font-size: 12px;
     box-shadow: -18px 0 40px rgb(0 0 0 / 38%);
   }
 }
+
+/* ---------- ambience FX (glass) — mirrors theme.css ----------
+   `.glass-on` is on <html>; the `.simple-*` chrome below is re-skinned to glass
+   while it's set. `--glass-keep` / `--glass-blur` come from applyFx(). */
+.glass-on .simple-sidebar,
+.glass-on .simple-rail,
+.glass-on .simple-shell #composer-box {
+  -webkit-backdrop-filter: blur(var(--glass-blur, 16px)) saturate(150%);
+  backdrop-filter: blur(var(--glass-blur, 16px)) saturate(150%);
+}
+.glass-on .simple-sidebar { background: color-mix(in srgb, var(--bg-2) var(--glass-keep, 60%), transparent); }
+.glass-on .simple-rail { background: color-mix(in srgb, var(--surface) var(--glass-keep, 60%), transparent); }
+.glass-on .simple-shell #composer-box { background: color-mix(in srgb, var(--surface-2) var(--glass-keep, 60%), transparent); }
+.glass-on .simple-shell .panel-hdr { background: color-mix(in srgb, var(--surface-2) var(--glass-keep, 60%), transparent); }
+
+/* Panels & windows (the simple layout's dialect of the shared surfaces). */
+.glass-on .simple-shell .msg.user .box,
+.glass-on .simple-shell .strow,
+.glass-on .simple-card,
+.glass-on .simple-shell .sub-panel,
+.glass-on .simple-shell .dir-modal-panel,
+.glass-on .simple-shell .mpick-menu {
+  -webkit-backdrop-filter: blur(var(--glass-panel-blur, 12px)) saturate(150%);
+  backdrop-filter: blur(var(--glass-panel-blur, 12px)) saturate(150%);
+}
+.glass-on .simple-shell .msg.user .box { background: color-mix(in srgb, var(--surface-2) var(--glass-panel-keep, 80%), transparent); }
+.glass-on .simple-shell .strow { background: color-mix(in srgb, var(--surface-2) var(--glass-panel-keep, 80%), transparent); }
+.glass-on .simple-card,
+.glass-on .simple-shell .sub-panel,
+.glass-on .simple-shell .dir-modal-panel,
+.glass-on .simple-shell .mpick-menu { background: color-mix(in srgb, var(--surface) var(--glass-panel-keep, 80%), transparent); }
+
+/* The ambient/wallpaper FX paints on <body>, but `.simple-shell`'s opaque
+   `background: var(--bg)` covers it. Drop it while any background FX is on so
+   the shell goes wallpaper/glass-aware like the default layout. */
+body.bgfx-on .simple-shell,
+body.bgfx-wall .simple-shell { background: transparent; }
 
 @media (max-width: 760px) {
   .simple-shell { display: flex; flex-direction: column; }

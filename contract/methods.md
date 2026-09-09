@@ -68,16 +68,18 @@ on `ws://127.0.0.1:9876` (override `XU_BRAIN_URL`), JSON-RPC 2.0 message framing
 | `memory.update` | `{ id, text }` | `{}` | approval-gated write; badge flips to `user-edited` |
 | `memory.add` | `{ text }` | `{ entries }` | new `user-edited` entry from the panel |
 | `memory.delete` | `{ id }` | `{}` | remove entry; emits `memory.updated` |
-| `skill.list` | — | `[{ id, name, desc, state }]` | LOADED / DEMAND / OFF |
-| `skill.set` | `{ id, enabled }` | `{ skills }` | toggle a skill and return the catalog |
+| `memory.replace_all` | `{ entries: string[] }` | `{ entries }` | whole-file editor — paragraphs map positionally; changed→update, removed→delete, new→append |
+| `memory.mnemo` | — | `{ available, data_dir }` | built-in Mnemosyne status for the Config → Memory pane |
+| `skill.list` | `{ session_id? }` | `[{ id, name, desc, state, ambient, keywords }]` | catalog; `session_id` returns that session's effective state (per-session overrides applied), omit for the global defaults |
+| `skill.set` | `{ id, enabled, session_id? }` | `{ skills }` | toggle a skill and return the catalog; with `session_id` the toggle is a **per-session override** (other sessions keep following the global default), `-32602` unknown skill, `-32002` unknown session |
 | `skill.load` | `{ id }` | `{ id, body }` | load a skill *into the agent* (progressive disclosure); use `skill.body` to read one for editing |
 | `skill.body` | `{ id }` | `{ id, body }` | read the current skill body for editing without changing skill state |
 | `skill.add` | `{ id, name, desc, body, keywords? }` | `{ skills }` | create a custom skill and return the catalog |
 | `skill.update` | `{ id, name?, desc?, body?, keywords? }` | `{ skills }` | update a custom skill and return the catalog |
 | `skill.remove` | `{ id }` | `{ skills }` | remove a custom skill and return the catalog |
-| `tool.list` | — | `[{ toolset, enabled, tools: [...] }]` | state panel toggles |
-| `tool.set_enabled` | `{ toolset, enabled }` | `{}` | |
-| `tool.set_dropin_enabled` | `{ name, enabled }` | `{}` | toggle one user-authored drop-in tool; `-32002` if the name is not an active drop-in |
+| `tool.list` | `{ session_id? }` | `{ toolsets: [{ toolset, enabled, tools: [...] }], dropins: [{ name, toolset, approval, enabled }] }` | state panel toggles; `session_id` returns that session's effective enable state |
+| `tool.set_enabled` | `{ toolset, enabled, session_id? }` | `{}` | with `session_id` a **per-session override** for the toolset; `-32002` unknown session |
+| `tool.set_dropin_enabled` | `{ name, enabled, session_id? }` | `{}` | toggle one user-authored drop-in tool; with `session_id` a **per-session override**; `-32002` if the name is not an active drop-in (or unknown session)
 | `todo.get` | `{ session_id }` | `{ phases: [...] }` | current plan for the session; `{ phases: [] }` when the agent has not written one |
 | `config.get` | — | `{ context_length, compress_threshold, approval_mode, approval_modes, job_timeout, vision_model, model_fallbacks }` | `approval_modes` = custom modes `{ name: { auto: [tool pat], prompt: [tool pat] } }`; `model_fallbacks` = global ordered backup models |
 | `config.set` | `{ key, value }` | `{}` | `key: "approval_modes"` replaces the custom-mode map; `key: "approval_mode"` accepts `manual`, `yolo`, or a custom mode name; `key: "model_fallbacks"` takes an ordered array of model ids (deduped, blanks dropped) |
@@ -91,7 +93,7 @@ on `ws://127.0.0.1:9876` (override `XU_BRAIN_URL`), JSON-RPC 2.0 message framing
 | `subagent.activity` | `{ run_id? , session_id? }` | `{ runs: [{ id, child, prompt, status, started, finished, result, steps, reasoning }] }` | what a delegated sub-agent did/is doing — one run by `run_id` (from the `delegate` tool chip) or all runs of a session |
 | `slots.list` | — | `{ slots: { <slot>: [names] } }` | which plugins fill which slot; introspection only |
 | `layouts.list` | — | `{ layouts, panels, custom_layouts, custom_themes, active }` | plugin-registered layouts plus agent-authored definitions from `data_home/layouts/*/layout.json` |
-| `plugin.list` | — | `{ plugins: [{ name, version, description, provides, requires, unmet, enabled, settings, themes, ui? }] }` | Config → Plugins. `settings` is the manifest's declared schema with each key's live `value`; `themes` are the colour schemes it contributes (`{id, name, layout?, colors{}, css?}`), offered in Config → Themes while enabled; `unmet` names required slots nothing currently fills |
+| `plugin.list` | — | `{ plugins: [{ name, version, description, provides, requires, unmet, enabled, settings, themes, ui? }] }` | Config → Plugins. `settings` is the manifest's declared schema with each key's live `value`; `themes` are the colour schemes it contributes (`{id, name, layout?, colors{}, css?}`), offered in Config → Themes while enabled; `ui` is the frontend contribution `{module, element, mount, label?, icon?, assets?}` — built-in mounts are `statusbar` (chip), `config` (Config pane, tab from `label`/`icon`), `view` (nav entry + full view, entry from `label`/`icon`), `layout` (replaces the shell); any other lowercase-dashed mount loads with a warning and renders only in a layout that offers it; `assets` are extra files served under `/plugins/<name>/<file>` while enabled; `unmet` names required slots nothing currently fills |
 | `plugin.enable` | `{ name }` | `{ ok, name }` | loads the plugin now; `-32002` if unknown |
 | `plugin.disable` | `{ name }` | `{ ok, name }` | disposes every registration it made |
 | `plugin.set_setting` | `{ name, key, value }` | `{ ok, name, key, value, plugin }` | writes one **declared** setting, coerced to its declared type. `-32002` unknown plugin, `-32602` undeclared key or unfittable value |
@@ -119,6 +121,7 @@ state: on|off|error, trusted, error, tools, server }`. `env_keys` is keys only �
 a value is either a literal token or a `${VAR}` the brain expands, and neither
 belongs in a UI payload.
 
+
 ## Server → client events
 
 | Event | Payload | Meaning |
@@ -134,6 +137,7 @@ belongs in a UI payload.
 | `turn.approval` | `{ turn_id, session_id?, request_id, tool, args, reason, level }` | inline approval card; `level` = `risky` \| `always` — the shell hides "Always" on `always` |
 | `turn.approval_resolved` | `{ request_id, approved }` | card settles |
 | `turn.finished` | `{ turn_id, session_id, stop_reason, usage? }` | thinking row ends |
+| `memory.captured` | `{ session_id, turn_id, content, importance, kind }` | accepted memory candidate captured from a completed root turn |
 | `turn.failed` | `{ turn_id, session_id, error }` | visible error |
 | `context.updated` | `{ session_id, usage_pct, compress: bool, tokens, calibrated: bool, pressure? }` | CONTEXT meter — `usage_pct` is anchored to the provider's real `prompt_tokens` once sampled, heuristic until then |
 | `state.updated` | `{ session_id, model?, cwd? }` | agent state panel |

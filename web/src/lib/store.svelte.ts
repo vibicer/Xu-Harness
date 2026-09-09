@@ -12,7 +12,7 @@ import type {
 } from "./types";
 import { DEFAULT_STATE, EMPTY_DRAFT, type CompactionResult, type SessionStatus, type TabState, type TurnDraft, type ViewName } from "./store/shared";
 export { EMPTY_DRAFT } from "./store/shared";
-export type { ViewName, TurnDraft } from "./store/shared";
+export type { BuiltinViewName, ViewName, TurnDraft } from "./store/shared";
 
 import { StoreCoreBase } from "./store/core.svelte";
 import { MemoryMixin } from "./store/memory.svelte";
@@ -49,16 +49,16 @@ export { BUILTIN_THEMES, PALETTE } from "./layouts/registry";
  */
 export class XuBrainStore extends EventsMixin(
   AppearanceMixin(
-  PluginsMixin(
-    ApprovalsMixin(
-      PresetsMixin(
-        SubagentsMixin(
-          PersonasMixin(ProvidersMixin(ToolsMixin(SkillsMixin(MemoryMixin(StoreCoreBase))))),
+    PluginsMixin(
+      ApprovalsMixin(
+        PresetsMixin(
+          SubagentsMixin(
+            PersonasMixin(ProvidersMixin(ToolsMixin(SkillsMixin(MemoryMixin(StoreCoreBase))))),
+          ),
         ),
       ),
     ),
   ),
-),
 ) {
   protected override get activeSessionId(): string | null {
     return this.sessionId;
@@ -419,6 +419,18 @@ this.persistSessionTabs();
     );
   }
 
+  /** OS notification when the agent is waiting for your input (approval or ask). */
+  protected notifyAwaiting(sessionId: string | null | undefined, summary: string): void {
+    const s = loadNotify();
+    if (!s.enabled || !s.awaitInput || typeof document === "undefined") return;
+    if (s.onlyUnfocused && document.hasFocus()) return;
+    pushNotify(
+      "Xu needs your input",
+      summary || "the agent is waiting for you",
+      sessionId ? `await-${sessionId}` : "await",
+    );
+  }
+
   async switchSession(id: string): Promise<void> {
     // Clicking the already-active tab is also the workspace shortcut when
     // another dock view is open.
@@ -667,6 +679,12 @@ this.persistSessionTabs();
     if (key === "firecrawl_enabled") this.config.firecrawl_enabled = Boolean(value);
     if (key === "firecrawl_key") this.config.firecrawl_key = value ? String(value) : null;
     if (key === "prune_keep") this.config.prune_keep = Number(value);
+    if (key === "memory_mnemosyne_inject") this.config.memory_mnemosyne_inject = Boolean(value);
+    if (key === "memory_mnemosyne_embeddings") this.config.memory_mnemosyne_embeddings = Boolean(value);
+    if (key === "memory_mnemosyne_top_k") this.config.memory_mnemosyne_top_k = Number(value);
+    if (key === "memory_mnemosyne_max_chars") this.config.memory_mnemosyne_max_chars = Number(value);
+    if (key === "memory_autocapture") this.config.memory_autocapture = Boolean(value);
+    if (key === "memory_capture_min_interval") this.config.memory_capture_min_interval = Number(value);
   }
 
 

@@ -45,44 +45,104 @@
     return scrollEl.scrollHeight - scrollEl.scrollTop - scrollEl.clientHeight < 80;
   }
 
+  /** Frames a converging pin may spend chasing a settling height. A row that
+   *  just mounted is still at its content-visibility estimate, and a big turn
+   *  keeps inflating long after half a second of frames — the budget has to
+   *  outlast the settling, not just the switch. */
+  const MAX_PIN_FRAMES = 120;
+
   function scrollToBottom(): void {
     if (!scrollEl) return;
-    scrollEl.scrollTop = scrollEl.scrollHeight;
-    // second pass after paint catches late markdown/code reflow (e.g. on resume)
-    requestAnimationFrame(() => {
-      if (scrollEl) scrollEl.scrollTop = scrollEl.scrollHeight;
-    });
+    // Converging pin: with content-visibility rows the transcript keeps
+    // drifting for a few frames after a switch (estimate → real height as
+    // rows near the viewport render), so a single pass lands short of the
+    // newest response on long histories. Pin every frame until the height
+    // settles (bounded), and stop chasing if the user scrolls away.
+    let last = -1;
+    let stable = 0;
+    let frames = 0;
+    const pass = (): void => {
+      if (!scrollEl) return;
+      scrollEl.scrollTop = scrollEl.scrollHeight;
+      if (thinkingBody) thinkingBody.scrollTop = thinkingBody.scrollHeight;
+      const h = scrollEl.scrollHeight;
+      if (h === last) stable += 1;
+      else {
+        stable = 0;
+        last = h;
+      }
+      if (stable < 2 && ++frames < MAX_PIN_FRAMES && followLiveEdge) requestAnimationFrame(pass);
+    };
+    pass();
   }
 
-  // Capture whether the user was following the live edge BEFORE Svelte
-  // applies the new message/tool/approval DOM. Checking after the update
-  // sees the new height at the old scrollTop and incorrectly reports that
-  // the user scrolled away.
-  let followLiveEdge = $state(true);
-  $effect.pre(() => {
-    void brain.session?.id;
-    void brain.messages.length;
-    void brain.draft;
-    void brain.draft?.steps.length;
-    void brain.draft?.reasoning.length;
-    void brain.approvals.length;
-    followLiveEdge = nearBottom();
-  });
 
+  // Follow the live edge, tracked from real scroll events only. Measuring
+  // on every streaming delta instead forced a full-transcript layout per
+  // chunk (nearBottom reads scrollHeight) — that layout thrash is what made
+  // long sessions lag while streaming. A scroll event fires on user scrolls
+  // and on our own pins (which land at the bottom and keep following on);
+  // content growth alone fires nothing, so follow state stays truthful.
+  let followLiveEdge = $state(true);
+  function onScroll(): void {
+    followLiveEdge = nearBottom();
+  }
+
+  // Pin to the bottom at most once per frame: bursts of deltas coalesce into
+  // one write, so the forced layout that a pin costs happens once per frame,
+  // not once per delta.
+  let pinQueued = false;
+  let lastSessionId: string | undefined;
+  /** True while a draft was streaming on the previous run of this effect, so
+   *  the run that finds it gone is the end of a turn. */
+  let streaming = false;
+  /** Row count on the previous run, so the reload that lands the finished
+   *  turn's row is caught even when it arrives after the draft is gone. */
+  let lastLen = 0;
   $effect(() => {
     void brain.session?.id;
-    void brain.messages.length;
+    const len = brain.messages.length;
     void brain.draft;
     void brain.draft?.steps.length;
     void brain.draft?.reasoning.length;
     void brain.approvals.length;
+    const switched = brain.session?.id !== lastSessionId;
+    // The end of a turn has two edges and the pin has to catch either: the
+    // draft going away, and the authoritative row landing with the reload —
+    // which can be the next frame or a second later.
+    const turnEnded = streaming && !switched && brain.draft === null;
+    const rowLanded = !switched && len !== lastLen;
+    streaming = brain.draft !== null;
+    lastLen = len;
+    // Session switch: the transcript was replaced wholesale — rearm following
+    // and pin hard (the double pass in scrollToBottom catches late
+    // font/code reflow on the fresh history).
+    if (switched) {
+      lastSessionId = brain.session?.id;
+      followLiveEdge = true;
+      void tick().then(() => scrollToBottom());
+      return;
+    }
     // Only pin when the user was already following the stream; scrolling up
     // means "let me read", so don't yank them back.
     if (!followLiveEdge) return;
-    void tick().then(() => {
-      scrollToBottom();
+    // A finished turn is not another streaming delta: finalizeTurn dropped the
+    // draft and mounted the authoritative row in its place, and that row is at
+    // its intrinsic-size estimate right now — it inflates to its real height
+    // over the frames AFTER this effect. A single write would pin to a height
+    // that is about to be wrong and leave the view at the top of the transcript
+    // the moment the response ends, so converge like a switch does.
+    if (turnEnded || rowLanded) {
+      void tick().then(() => scrollToBottom());
+      return;
+    }
+    if (pinQueued) return;
+    pinQueued = true;
+    requestAnimationFrame(() => {
+      pinQueued = false;
+      if (!scrollEl) return;
+      scrollEl.scrollTop = scrollEl.scrollHeight;
       if (thinkingBody) thinkingBody.scrollTop = thinkingBody.scrollHeight;
-      requestAnimationFrame(() => scrollToBottom());
     });
   });
   const thinking = $derived(busy || brain.isBusy(brain.session?.id ?? "") || brain.draft !== null);
@@ -113,7 +173,7 @@
 </script>
 
 <div id="chat-main" class:working={thinking}>
-  <div id="messages" bind:this={scrollEl}>
+  <div id="messages" bind:this={scrollEl} onscroll={onScroll}>
     {#if brain.isCompressing(brain.session?.id)}
       <div class="compressing-banner" role="status" aria-live="polite">
         <span class="compressing-spinner" aria-hidden="true"></span>

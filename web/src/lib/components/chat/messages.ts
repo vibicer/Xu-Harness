@@ -2,7 +2,7 @@
  *  Pure functions only — no runes, no markup. Bodies are verbatim from the
  *  original Chat.svelte (see git history before the Phase E1a split). */
 import type { ApprovalCard, ChatMessage } from "../../types";
-import { compactionDivider } from "../../compaction";
+import { compactionDivider } from "../../compaction.ts";
 
 // Replace raw approval JSON with one short, human-readable action.
 const APPROVAL_SUMMARY_LIMIT = 160;
@@ -80,8 +80,23 @@ export interface Segment {
 }
 
 /** Split assistant text into prose and [error] segments; errors render as
- * framed blocks instead of raw JSON dumps. */
+ * framed blocks instead of raw JSON dumps.
+ * Memoized: the transcript calls this for every message on every history
+ * reload (the whole array is replaced after each turn), and a stable array
+ * identity lets Svelte skip re-running the inner each-block effects too. */
+const SEGMENT_CACHE = new Map<string, Segment[]>();
+const SEGMENT_CACHE_CAP = 4000;
+
 export function segments(text: string): Segment[] {
+  const hit = SEGMENT_CACHE.get(text);
+  if (hit !== undefined) return hit;
+  const out = splitSegments(text);
+  if (SEGMENT_CACHE.size >= SEGMENT_CACHE_CAP) SEGMENT_CACHE.clear();
+  SEGMENT_CACHE.set(text, out);
+  return out;
+}
+
+function splitSegments(text: string): Segment[] {
   const out: Segment[] = [];
   const re = /(?:^|\n)\[error\]\s([\s\S]*?)(?=\n\[error\]|\s*$)/g;
   let last = 0;
@@ -256,6 +271,91 @@ export function displayTurns(messages: ChatMessage[]): Turn[] {
     }
   }
   return turns;
+}
+
+/** Tool-step count of a turn — divider/subagent turns carry none. */
+function turnSteps(turn: Turn): number {
+  return turn.assistant?.steps?.length ?? 0;
+}
+
+/** Size one transcript mount batch walking back from index `end`, bounded by
+ * BOTH turn count and total tool steps. The mount window counts turns, but a
+ * single turn can carry 100+ tool steps — with a turn-only bound, "20 turns"
+ * can mean 600 ToolChips, and the synchronous mount is the session-switch
+ * freeze the window was built to avoid. Always returns >= 1 when end > 0 so
+ * one oversized turn can't stall backfill. */
+export function mountBatch(all: Turn[], end: number, maxTurns: number, stepBudget: number): number {
+  let steps = 0;
+  let count = 0;
+  while (count < end && count < maxTurns) {
+    const s = turnSteps(all[end - 1 - count]);
+    if (count > 0 && steps + s > stepBudget) break;
+    steps += s;
+    count++;
+  }
+  return count;
+}
+
+/** Every tool step in the history, across all turns. The mount window budgets
+ *  per batch, but the decision to mount eagerly is made on the TOTAL: a
+ *  step-dense turn in the middle must not clamp a small session to one turn. */
+export function totalSteps(all: Turn[]): number {
+  let n = 0;
+  for (const t of all) n += turnSteps(t);
+  return n;
+}
+
+/** Steps cheap enough to mount in one synchronous pass when a session opens.
+ *  The window exists to defuse histories carrying ~2000 tool steps, where the
+ *  synchronous ToolChip mount froze the shell for seconds; 600 stays well clear
+ *  of that while covering ordinary sessions whole. Anything above windows. */
+export const EAGER_STEPS = 600;
+
+/** Turns to mount on a session's first paint: the whole history when it fits
+ *  the eager budget, otherwise one step-aware batch off the tail.
+ *
+ *  Getting this wrong in the timid direction is worse than the freeze it
+ *  prevents — a 4-turn session whose tail turn carries 171 steps armed to ONE
+ *  turn under a per-batch budget, and the other three turns then looked
+ *  deleted: "when I sent a message all my old responses disappeared". */
+export function armMount(all: Turn[], maxTurns: number, stepBudget: number): number {
+  const len = all.length;
+  if (len === 0) return 0;
+  if (totalSteps(all) <= EAGER_STEPS) return len;
+  return mountBatch(all, len, maxTurns, stepBudget);
+}
+
+/** Where the reader is, and so what a prepend must do to keep their view still.
+ *
+ *  A prepend adds height ABOVE the viewport, which silently moves content
+ *  under a reader unless the scroll offset is corrected — and which correction
+ *  is right depends entirely on where they are:
+ *
+ *  - `"edge"`: on the newest response. This is where opening a session or
+ *    refreshing leaves them. Re-pin to the bottom; the earlier one-shot
+ *    reference correction left scrollTop alone while scrollHeight grew, so
+ *    batch after batch the viewport marched to the top of the transcript.
+ *  - `"hold"`: scrolled back into the mounted window and about to run out of
+ *    history. Hold the row under the top edge instead — pinning them to the
+ *    bottom from here would be a yank.
+ *  - `null`: mid-window, reading. Mount nothing until they move.
+ *
+ *  A session that fits on screen is always `"edge"` (both gaps are 0 or
+ *  negative), which is honest: there is nothing above to correct for. */
+export type BackfillMode = "edge" | "hold" | null;
+
+export function backfillMode(
+  box: { scrollTop: number; scrollHeight: number; clientHeight: number },
+  opts: { edgeSlack?: number; triggerViews?: number } = {},
+): BackfillMode {
+  const view = box.clientHeight;
+  if (view <= 0) return null;
+  const edgeSlack = opts.edgeSlack ?? 80;
+  const triggerViews = opts.triggerViews ?? 1;
+  const fromBottom = box.scrollHeight - box.scrollTop - view;
+  if (fromBottom <= edgeSlack) return "edge";
+  if (box.scrollTop <= view * triggerViews && fromBottom > view) return "hold";
+  return null;
 }
 
 /** Compress a provider error payload into one readable line.

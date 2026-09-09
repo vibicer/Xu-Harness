@@ -30,6 +30,8 @@ _DEFAULTS: dict[str, Any] = {
     "session_model": {},  # {session_id: model_id} — per-session active model
     "session_provider": {},  # {session_id: provider_id} — pinned provider for a session model
     "session_persona": {},  # {session_id: persona_id} — per-session persona override
+    "session_skills": {},  # {session_id: {skill_id: enabled}} — per-session overrides on the global skill defaults
+    "session_tools": {},  # {session_id: {toolset_or_tool: enabled}} — per-session overrides on the global toolset/drop-in defaults
     "active_persona": None,  # global default persona id (None → SOUL.md fallback)
     "prune_keep": 30,  # cap on saved sessions — oldest is pruned when exceeded (count, not age)
     "retry_max": 10,  # max provider-retry attempts per turn on transient error
@@ -144,6 +146,46 @@ class Config:
         d[name] = enabled
         self._values["dropin_tools"] = d
         self.save()
+
+    # ---- per-session skill/tool overrides ----
+    # Delta over the global defaults, mirroring session_max_tokens: an absent
+    # key means "follow the global default". A new session has no overrides,
+    # so it follows Config — nothing needs to be snapshotted at creation.
+
+    def session_skill_overrides(self, session_id: str) -> dict[str, bool]:
+        """Raw per-session skill overrides ``{skill_id: enabled}``; absent = default."""
+        ov = self._values.get("session_skills", {}).get(session_id, {})
+        return {k: bool(v) for k, v in ov.items() if isinstance(v, bool)}
+
+    def set_session_skill(self, session_id: str, skill_id: str, enabled: bool | None) -> None:
+        """Set (or clear, with None) one session's override for a skill."""
+        self._set_session_override("session_skills", session_id, skill_id, enabled)
+
+    def session_tool_overrides(self, session_id: str) -> dict[str, bool]:
+        """Raw per-session tool overrides keyed like the UI toggles them:
+        toolset names for built-ins, tool names for drop-ins; absent = default."""
+        ov = self._values.get("session_tools", {}).get(session_id, {})
+        return {k: bool(v) for k, v in ov.items() if isinstance(v, bool)}
+
+    def set_session_tool(self, session_id: str, name: str, enabled: bool | None) -> None:
+        """Set (or clear, with None) one session's override for a toolset or drop-in tool."""
+        self._set_session_override("session_tools", session_id, name, enabled)
+
+    def _set_session_override(self, key: str, session_id: str, item: str, enabled: bool | None) -> None:
+        all_ov = dict(self._values.get(key, {}))
+        ov = dict(all_ov.get(session_id, {}))
+        old = ov.get(item)
+        if enabled is None:
+            ov.pop(item, None)
+        else:
+            ov[item] = bool(enabled)
+        if ov:
+            all_ov[session_id] = ov
+        else:
+            all_ov.pop(session_id, None)
+        if old != enabled:
+            self._values[key] = all_ov
+            self.save()
 
     def retry_max(self) -> int:
         return int(self._values.get("retry_max", 10))
@@ -281,7 +323,7 @@ class Config:
     def delete_session(self, session_id: str) -> None:
         """Remove persisted settings associated with a deleted session."""
         changed = False
-        for key in ("session_model", "session_provider", "session_persona", "session_max_tokens", "session_rules", "session_preset"):
+        for key in ("session_model", "session_provider", "session_persona", "session_max_tokens", "session_rules", "session_preset", "session_skills", "session_tools"):
             values = dict(self._values.get(key, {}))
             if session_id in values:
                 values.pop(session_id)

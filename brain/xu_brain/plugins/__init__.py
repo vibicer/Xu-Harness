@@ -298,17 +298,6 @@ class PluginBus:
     # introspection
     # ------------------------------------------------------------------ #
 
-    def list_plugins(self) -> list[dict[str, Any]]:
-        """``[{name, enabled, has: [hook names]}]`` for every loaded plugin."""
-        return [
-            {
-                "name": p.name,
-                "enabled": self._is_enabled(p.name),
-                "has": [h for h in HOOK_NAMES if p.has(h)],
-            }
-            for p in self._plugins.values()
-        ]
-
     def __len__(self) -> int:
         return len(self._plugins)
 

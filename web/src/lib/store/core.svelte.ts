@@ -96,6 +96,9 @@ export class StoreCoreBase implements StoreCore {
   protected notifyTurn(_sessionId: string | null, _failed: boolean, _error?: unknown): void {
     throw new Error("StoreCore.notifyTurn: not implemented by XuBrainStore");
   }
+  protected notifyAwaiting(_sessionId: string | null | undefined, _summary: string): void {
+    throw new Error("StoreCore.notifyAwaiting: not implemented by XuBrainStore");
+  }
   protected finalizeTurn(_id: string, _failed: boolean): void {
     throw new Error("StoreCore.finalizeTurn: not implemented by XuBrainStore");
   }

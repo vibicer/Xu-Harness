@@ -217,14 +217,17 @@ class MemoryStore:
                     break
         return out
 
-    def reflect(self, only: list[str] | None = None) -> str:
+    def reflect(self, only: list[str] | None = None, entry_cap: int | None = None) -> str:
         """Compact digest of (optionally namespace-scoped) entries for the
         system prompt.
 
         Each entry is prefixed with its id so the model can cite/edit it
         precisely. ``only`` restricts to entries whose id starts with any of
-        the given prefixes (``None`` = all, ``[]`` = none). Empty memory or an
-        empty scope yields an empty string.
+        the given prefixes (``None`` = all, ``[]`` = none). ``entry_cap``
+        hard-truncates each entry body to at most that many characters (id prefix
+        excluded); words are broken at the last space before the cap and ' …' is
+        appended. Use 0 or None for no truncation. Empty memory yields an empty
+        string.
         """
         entries = self._read()
         if not entries:
@@ -238,6 +241,11 @@ class MemoryStore:
             body = e["text"].strip()
             # Collapse internal newlines to a single line for a compact digest.
             body = " ".join(body.split())
+            # Apply hard truncation to body text when entry_cap > 0.
+            if entry_cap and entry_cap > 0 and len(body) > entry_cap:
+                idx = body.rfind(" ", 0, entry_cap)
+                if idx > 0:
+                    body = body[:idx] + " …"
             lines.append(f"[{e['id']}] {body}")
         return "\n".join(lines)
 

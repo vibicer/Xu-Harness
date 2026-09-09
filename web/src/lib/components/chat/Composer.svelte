@@ -245,9 +245,6 @@ el.style.height = el.scrollHeight + "px";
     display: inline-flex;
     align-items: center;
     gap: 7px;
-    padding: 3px 8px;
-    border: 1px solid var(--border);
-    background: var(--surface-2);
     white-space: nowrap;
   }
   .context-metrics .metric {

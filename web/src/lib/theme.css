@@ -188,6 +188,119 @@ body {
 
 #app, .app-root { display: flex; width: calc(100vw / var(--scale)); height: calc(100vh / var(--scale)); }
 
+/* ---------- ambience FX (glass + background, Config → Themes) ----------
+   `glass-on` / `bgfx-on` are toggled on <html> / <body> by applyFx(). They ride
+   on top of the active scheme: the vars below are set there, the rules here only
+   read them, so switching layout/theme never has to know about FX. */
+
+/* Stack the shell above the fixed ambient layer. */
+#app, .app-root { position: relative; z-index: 1; }
+
+/* Ambient background: soft accent blobs behind everything. Opacity and accent
+   colors are driven by --bgfx-* (set in JS), so the layer recolors with the
+   scheme and dims with the intensity slider. */
+body::before {
+  content: "";
+  position: fixed;
+  inset: -6%;
+  z-index: 0;
+  pointer-events: none;
+  background:
+    radial-gradient(42% 38% at 16% 12%, var(--bgfx-c1, #8bc7ff) 0%, transparent 72%),
+    radial-gradient(46% 42% at 84% 86%, var(--bgfx-c2, #5fd4ff) 0%, transparent 72%),
+    radial-gradient(28% 24% at 62% 4%, color-mix(in srgb, var(--bgfx-c1, #8bc7ff) 55%, var(--bgfx-c2, #5fd4ff)) 0%, transparent 75%);
+  opacity: 0;
+  transition: opacity 0.4s ease;
+}
+body.bgfx-on::before {
+  opacity: var(--bgfx-intensity, 0.55);
+  animation: bgdrift 34s ease-in-out infinite alternate;
+}
+@keyframes bgdrift {
+  from { transform: translate3d(0, 0, 0) scale(1); }
+  to   { transform: translate3d(-2.5%, 2%, 0) scale(1.05); }
+}
+@media (prefers-reduced-motion: reduce) {
+  body.bgfx-on::before { animation: none; }
+}
+
+/* A chosen wallpaper supersedes the blobs: the ::before layer swaps its gradient
+   for the image. It stays a fixed *element* (not `background-attachment: fixed`),
+   which is what lets the chrome's backdrop-filter blur it reliably. */
+body.bgfx-wall::before {
+  opacity: 1;
+  animation: none;
+  /* Oversize by 2× the wallpaper's own blur so the softened edges don't reveal
+     a dark rim at the viewport boundary. */
+  inset: calc(var(--bgfx-wall-blur, 0px) * -2);
+  background:
+    linear-gradient(color-mix(in srgb, var(--bg) 45%, transparent), color-mix(in srgb, var(--bg) 45%, transparent)),
+    var(--bgfx-wall, none);
+  background-size: auto, cover;
+  background-position: 0 0, center;
+  background-repeat: no-repeat;
+  filter: blur(var(--bgfx-wall-blur, 0px));
+}
+
+/* Wallpaper preview thumbnail in Config → Themes. */
+.wall-thumb {
+  width: 46px; height: 30px; object-fit: cover;
+  border: 1px solid var(--border-strong); background: var(--bg);
+}
+label.k-btn.pri input[type="file"] { display: none; }
+
+/* Glassmorphism. Two independent dials: "chrome" (dock, bars, composer) and
+   "panel" (message boxes, state rows, modal windows) — each with its own blur
+   and transparency, set by applyFx(). The keep-vars are the opaque fraction
+   (100 − transparency). */
+:root.glass-on {
+  --glass-keep: 60%;
+  --glass-blur: 16px;
+  --glass-panel-keep: 80%;
+  --glass-panel-blur: 12px;
+}
+.glass-on #dock,
+.glass-on #ws-bar,
+.glass-on .session-tab,
+.glass-on .st,
+.glass-on .panel-hdr,
+.glass-on .dock-icon,
+.glass-on #composer-box {
+  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(150%);
+  backdrop-filter: blur(var(--glass-blur)) saturate(150%);
+}
+.glass-on #dock { background: color-mix(in srgb, var(--bg-2) var(--glass-keep), transparent); }
+.glass-on #ws-bar { background: color-mix(in srgb, var(--bg-2) var(--glass-keep), transparent); }
+.glass-on .session-tab { background: color-mix(in srgb, var(--surface) var(--glass-keep), transparent); }
+.glass-on .session-tab.active { background: color-mix(in srgb, var(--surface-2) var(--glass-keep), transparent); }
+.glass-on .st { background: color-mix(in srgb, var(--surface) var(--glass-keep), transparent); }
+.glass-on .panel-hdr { background: color-mix(in srgb, var(--surface-2) var(--glass-keep), transparent); }
+.glass-on .dock-icon { background: color-mix(in srgb, var(--surface) var(--glass-keep), transparent); }
+.glass-on #composer-box { background: color-mix(in srgb, var(--bg) var(--glass-keep), transparent); }
+
+/* Panels & windows: message boxes, agent-state rows, the state rail, dropdowns
+   and every modal — the "windows" that used to stay opaque. */
+.glass-on #astate,
+.glass-on .msg .box,
+.glass-on .strow,
+.glass-on .sub-panel,
+.glass-on .dir-modal-panel,
+.glass-on .logs-modal-panel,
+.glass-on .about-panel,
+.glass-on .mpick-menu {
+  -webkit-backdrop-filter: blur(var(--glass-panel-blur)) saturate(150%);
+  backdrop-filter: blur(var(--glass-panel-blur)) saturate(150%);
+}
+.glass-on #astate { background: color-mix(in srgb, var(--bg-2) var(--glass-panel-keep), transparent); }
+.glass-on .msg .box { background: color-mix(in srgb, var(--surface) var(--glass-panel-keep), transparent); }
+.glass-on .msg.user .box { background: color-mix(in srgb, var(--bg-2) var(--glass-panel-keep), transparent); }
+.glass-on .strow { background: color-mix(in srgb, var(--surface) var(--glass-panel-keep), transparent); }
+.glass-on .sub-panel,
+.glass-on .dir-modal-panel,
+.glass-on .logs-modal-panel,
+.glass-on .about-panel { background: color-mix(in srgb, var(--surface) var(--glass-panel-keep), transparent); }
+.glass-on .mpick-menu { background: color-mix(in srgb, var(--bg) var(--glass-panel-keep), transparent); }
+
 /* ---------- left pixel dock ---------- */
 #dock {
   width: 72px; flex-shrink: 0;
@@ -241,6 +354,11 @@ body {
 .view { display: none; flex: 1; min-height: 0; }
 .view.active { display: flex; flex-direction: column; }
 .view-inner { flex: 1; overflow-y: auto; padding: 26px 30px 20px; }
+
+/* Plugin-contributed full view. PluginSlot's chrome is a <span>, so it needs
+   explicit sizing to fill the view that is showing it — the custom element
+   inside sizes itself against this box. */
+.plugin-view { display: block; width: 100%; height: 100%; }
 
 .page-title { font-family: var(--pixel); font-size: 17px; color: var(--magenta); margin-bottom: 8px; }
 .page-title::before { content: "// "; color: var(--faint); }
@@ -385,7 +503,14 @@ body {
 }
 @keyframes compressing-spin { to { transform: rotate(360deg); } }
 
-.msg { display: flex; flex-direction: column; gap: 4px; }
+.msg {
+  /* content-visibility: offscreen rows skip layout/paint entirely — a 400+ message
+     history costs only what the viewport shows. The intrinsic size estimate keeps
+     the scrollbar honest before a row has rendered. */
+  content-visibility: auto;
+  contain-intrinsic-size: auto 120px;
+  display: flex; flex-direction: column; gap: 4px;
+}
 .msg .box {
   position: relative;
   border: 2px solid var(--border);
@@ -779,11 +904,16 @@ body {
   white-space: nowrap;
 }
 #composer-foot .foot-label { color: var(--dim); text-transform: uppercase; letter-spacing: .04em; }
+
+/* Approval + git readouts render bare — flat text, no pill chrome.
+   (Plugin statusbar chips keep their chrome: they opt into it.) */
+#composer-foot .foot-group.approvals,
+#composer-foot .foot-status.git-wrap { border: 0; background: transparent; padding: 0; }
 /* approval-mode toggle button (composer foot) */
 #composer-foot .yolo-toggle {
   display: inline-flex; align-items: center; gap: 5px; min-height: 22px;
-  background: transparent; border: 1px solid var(--border-strong); color: var(--faint);
-  font-family: var(--mono); font-size: 10px; padding: 2px 7px; cursor: pointer;
+  background: transparent; border: 0; color: var(--faint);
+  font-family: var(--mono); font-size: 10px; padding: 0 2px; cursor: pointer;
 }
 #composer-foot .yolo-toggle:hover { color: var(--text); border-color: var(--text); }
 #composer-foot .yolo-toggle:focus-visible { outline: 1px solid var(--cyan); outline-offset: 2px; }
@@ -1178,6 +1308,7 @@ body {
 
 /* number = field + unit + nudge, so a value is adjustable without a keyboard */
 .k-step { display: inline-flex; align-items: stretch; border: 1px solid var(--border-strong); background: var(--bg); height: 30px; }
+.k-step-pair { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .k-step:focus-within { border-color: var(--magenta); }
 .cfg-pane .k-step input[type=number] { width: 86px; height: auto; border: 0; background: transparent; padding: 0 6px; }
 .k-step .u { display: inline-flex; align-items: center; padding-right: 7px; min-width: 26px; text-align: right;
@@ -1284,8 +1415,15 @@ select option { background: var(--surface); color: var(--text); font-family: var
 .mem-meta .flash { display: inline-flex; align-items: center; gap: 4px; font-family: var(--crt); font-size: 11.5px; color: var(--amber); }
 .mem-meta .flash.ok { color: var(--ok); }
 .mem-meta .spacer { flex: 1; }
+.mem-blob { width: 100%; font-size: 13px; line-height: 1.55; font-family: var(--mono); resize: vertical; }
 .mem-add { display: flex; align-items: flex-end; gap: 8px; margin-top: 14px; }
 .mem-add textarea { flex: 1; font-size: 13px; line-height: 1.4; resize: vertical; }
+-/* MEMORY pane: entries read as one document in a single box — the row
+-   separators divide entries; the editors themselves are borderless. */
+-.mem-list { border: 1px solid var(--border-strong); border-radius: 10px; overflow: hidden; }
+-.mem-list .mem-row textarea { border: 0; background: transparent; padding: 0 0 0 2px; }
+-.mem-list .mem-row:hover, .mem-list .mem-row:focus-within { background: var(--surface); }
+.mem-list .mem-row:hover, .mem-list .mem-row:focus-within { background: var(--surface); }
 .btn.danger.confirm { color: var(--amber); border-color: var(--amber); }
 .btn.danger.confirm:hover { background: var(--amber); color: var(--bg); }
 

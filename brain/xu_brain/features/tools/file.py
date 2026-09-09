@@ -11,10 +11,8 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
 import re
 import sqlite3
-import stat as stat_mod
 from pathlib import Path
 from typing import Any
 
@@ -28,13 +26,6 @@ def _resolve(cwd: str, path: str) -> Path:
         p = Path(cwd) / p
     return p.expanduser()
 
-
-def _is_text(data: bytes) -> bool:
-    try:
-        data.decode("utf-8")
-        return True
-    except UnicodeDecodeError:
-        return False
 
 
 def _snapshot_tag(text: str) -> str:
@@ -163,17 +154,26 @@ class FileEditTool(Tool):
         if not patch.strip():
             return ToolResult.err("empty patch")
         lines = patch.splitlines()
-        # tolerate a leading blank line / indentation on the header (models
-        # often emit the patch after a stray newline)
-        while lines and not lines[0].strip():
+        # tolerate leading junk before the header: blank lines, markdown code
+        # fences (```python …), and indentation — models emit these constantly
+        # and a bare "must start with header" error makes them retry the exact
+        # same malformed patch forever.
+        while lines and (
+            not lines[0].strip() or lines[0].strip().startswith("```")
+        ):
             lines.pop(0)
+        # a trailing closing fence (``` alone) is patch wrapper, not content
+        while lines and lines[-1].strip().startswith("```"):
+            lines.pop()
         if not lines:
             return ToolResult.err("empty patch")
         lines[0] = lines[0].strip()
         if not self._HEADER.match(lines[0]):
-            return ToolResult.err("patch must start with [path#TAG] header")
+            return ToolResult.err(
+                "patch must start with [path#TAG] header — first line was: "
+                f"{lines[0][:80]!r}"
+            )
         hdr = self._HEADER.match(lines[0])
-        assert hdr is not None
         target = _resolve(ctx.cwd, hdr.group("path"))
         if not target.exists():
             return ToolResult.err(f"not found: {target}")

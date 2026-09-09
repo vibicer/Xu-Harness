@@ -9,12 +9,22 @@
   import ConfigView from "../../components/ConfigView.svelte";
   import LogsView from "../../components/LogsView.svelte";
   import OnboardingView from "../../components/OnboardingView.svelte";
+  import PluginSlot from "../../components/PluginSlot.svelte";
+  import { pluginViewGuard, pluginViewName } from "../../plugin-views.svelte";
   import { createTabDrag } from "../../tab-drag.svelte";
   import { flip } from "svelte/animate";
   import { quintOut } from "svelte/easing";
 
   // Tab order is a user preference, so the strip is draggable (Alt+←/→ too).
   const drag = createTabDrag();
+
+  /** The open view's plugin, or null for a built-in. `only` the open view's
+   *  module is imported — a null `only` would mount every view plugin hidden. */
+  const pluginView = $derived(pluginViewName(brain.view));
+
+  // A plugin view can vanish while it is open (disabled, uninstalled) — land
+  // on the chat rather than sit on a blank screen.
+  $effect(() => pluginViewGuard(brain));
 </script>
 
 <div class="app-root">
@@ -52,6 +62,11 @@
       <div id="view-sessions" class="view" class:active={brain.view === "sessions"}><SessionsView /></div>
       <div id="view-config" class="view" class:active={brain.view === "config"}><ConfigView /></div>
       <div id="view-logs" class="view" class:active={brain.view === "logs"}><LogsView /></div>
+      <div id="view-plugin" class="view" class:active={pluginView !== null}>
+        {#if pluginView !== null}
+          <PluginSlot mount="view" only={pluginView} chrome="plugin-view" />
+        {/if}
+      </div>
     {/if}
   </div>
 </div>

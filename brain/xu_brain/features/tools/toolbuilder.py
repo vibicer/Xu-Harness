@@ -29,7 +29,7 @@ from pathlib import Path
 from typing import Any
 
 from ...core.governance import ApprovalLevel
-from ..tools.base import Tool, ToolContext, ToolResult
+from ..tools.base import ToolContext, ToolResult
 from .loader import active_dropins
 
 __all__ = ["tool_create", "tool_list", "tool_remove"]

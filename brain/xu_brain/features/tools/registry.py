@@ -24,7 +24,7 @@ from typing import Any, Callable
 from ...core.bus import HookBus
 from .schema import validation_error
 
-from ...core.governance import ApprovalLevel, ApprovalManager
+from ...core.governance import ApprovalLevel, ApprovalManager, TIMEOUT_REASON
 from .base import Tool, ToolContext, ToolResult
 
 # Default output cap (chars) before truncation hits the model.
@@ -67,6 +67,10 @@ class ToolRegistry:
         self.output_cap = output_cap
         self._failure_threshold = 3
         self.hooks = hooks or HookBus()
+        # Per-session override source: ``(session_id) -> {toolset_or_tool: enabled}``,
+        # wired to Config by the App at boot. An absent key follows the global
+        # default, so a session with no overrides behaves exactly as before.
+        self.session_overrides: Callable[[str], dict[str, bool]] = lambda _sid: {}
 
     # ---- registration ----
 
@@ -127,18 +131,37 @@ class ToolRegistry:
             return self._tool_enabled[name]
         return self.is_enabled(tool.toolset)
 
+    def tool_enabled_for(self, name: str, session_id: str | None = None) -> bool:
+        """Session-effective on/off for a tool.
+
+        Override granularity mirrors the UI toggles: drop-ins override by tool
+        name, built-ins by toolset name. A session override wins over the
+        global state; without ``session_id`` (or without an override) this is
+        exactly :meth:`tool_enabled`.
+        """
+        if session_id:
+            ov = self.session_overrides(session_id)
+            if name in ov:
+                return ov[name]
+            tool = self._tools.get(name)
+            if tool is not None and tool.toolset in ov:
+                return ov[tool.toolset]
+        return self.tool_enabled(name)
+
+
     def names(self) -> list[str]:
         return list(self._tools)
 
-    def schemas_for_model(self) -> list[dict[str, Any]]:
+    def schemas_for_model(self, session_id: str | None = None) -> list[dict[str, Any]]:
         """OpenAI-style tool schemas: ``{type:"function", function:{name,description,parameters}}``.
 
         A tool's ``schema`` field is the *parameters* JSON-Schema only; this wraps it
         in the OpenAI/Anthropic function envelope (Anthropic translation happens in
-        the provider client)."""
+        the provider client). Tools a session disabled are not offered to that
+        session's model at all."""
         out: list[dict[str, Any]] = []
         for name, tool in self._tools.items():
-            if not self.tool_enabled(name):
+            if not self.tool_enabled_for(name, session_id):
                 continue
             params = dict(tool.schema)
             params.setdefault("type", "object")
@@ -219,7 +242,13 @@ class ToolRegistry:
             return result if isinstance(result, ToolResult) else ToolResult.err(
                 str(pre.get("reason", "tool execution denied"))
             )
-        if not self.tool_enabled(tool_name):
+        sid = getattr(ctx, "session_id", None) or None
+        ov = self.session_overrides(sid) if sid else {}
+        if not self.tool_enabled_for(tool_name, sid):
+            if ov.get(tool_name) is False:
+                return ToolResult.err(f"tool disabled for this session: {tool_name}")
+            if tool.toolset in ov:
+                return ToolResult.err(f"toolset disabled for this session: {tool.toolset}")
             why = (
                 f"tool disabled: {tool_name}"
                 if tool_name in self._tool_enabled
@@ -239,6 +268,13 @@ class ToolRegistry:
             if not approved:
                 # turn.approval_resolved is emitted by the shell RPC path
                 # (approval.resolve) so every open tab learns the outcome.
+                if reason == TIMEOUT_REASON:
+                    # The user walked away: pause the turn instead of barrelling
+                    # on with a denied tool.
+                    agent = getattr(ctx, "agent", None)
+                    if agent is not None and hasattr(agent, "pause_turn"):
+                        agent.pause_turn(ctx.session_id)
+                    return ToolResult.err("waiting for the user to return")
                 return ToolResult.err(f"denied: {reason or 'not approved'}")
 
         klass = _CONCURRENCY_CLASSES.get(tool_name)

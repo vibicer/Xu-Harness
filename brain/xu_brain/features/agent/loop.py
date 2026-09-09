@@ -48,6 +48,14 @@ from .delegation import DelegationMixin
 from .live import LiveMixin
 from .prompt import PromptMixin
 
+
+# Message the agent leaves when it asked for input (approval or `ask`) and the
+# user did not reply before the timeout: the turn halts and waits for the user.
+_PAUSE_MESSAGE = (
+    "Paused — I asked for your input but got no reply in time, so I've stopped "
+    "and will wait for you to come back before continuing."
+)
+
 if TYPE_CHECKING:
     from ...plugins import PluginBus
 
@@ -93,6 +101,9 @@ class Agent(DelegationMixin, LiveMixin, ContextMixin, PromptMixin, CompactionMix
         self._subtasks: dict[str, asyncio.Future[str]] = {}
         # Sessions spawned by run_subtask — their turns get the recursion guard.
         self._subtask_sessions: set[str] = set()
+        # session_id -> pause message, set when a turn halts on approval/ask
+        # timeout. `_run` turns it into the turn's final reply.
+        self._paused: dict[str, str] = {}
         self._replies: dict[str, asyncio.Future[str]] = {}
         # Owning session per pending `ask` reply, so stop() only settles its own.
         self._reply_sessions: dict[str, str | None] = {}
@@ -101,19 +112,16 @@ class Agent(DelegationMixin, LiveMixin, ContextMixin, PromptMixin, CompactionMix
         # In-flight turn snapshot per session (steps + reasoning) so a
         # (re)connecting shell can resume a streaming draft via session.get.
         self._live_turns: dict[str, dict[str, Any]] = {}
+        self._memtasks: set[asyncio.Task[None]] = set()
+        self._memcapture_import_warned = False
         # Delegation runs: run_id -> activity record (child name, prompt,
         # status, mirrored steps) so the shell can show what a sub-agent did.
         # Throttle state for _save_delegations (see _SAVE_INTERVAL).
         self._delegations_saved = 0.0
-        self._delegations_dirty = False
         self._delegations: dict[str, dict[str, Any]] = {}
         self._load_delegations()
         # child ephemeral session id -> run_id (routes the child's events).
         self._delegation_by_session: dict[str, str] = {}
-        # Provenance: last-built (model-visible) system prompt fingerprint per
-        # session. Lets callers check whether what the model last saw can be
-        # reconstructed from the persisted store (P3: model-visible = logged).
-        self._last_sent_fp: dict[str, str] = {}
         # Last provider-reported usage per session: the
         # raw OpenAI {prompt_tokens, total_tokens} anchor, reused for the next
         # context % / compaction gate until a newer usage replaces it.
@@ -196,6 +204,16 @@ class Agent(DelegationMixin, LiveMixin, ContextMixin, PromptMixin, CompactionMix
         self._turns[session_id] = task
         return turn_id, None
 
+    def pause_turn(self, session_id: str | None, message: str | None = None) -> None:
+        """Halt this session's turn on approval/ask timeout and leave `message`
+        (default :data:`_PAUSE_MESSAGE`) as the turn's final reply, so the agent
+        stops and waits for the user to come back instead of barrelling on."""
+        sid = session_id if session_id is not None else ""
+        self._paused[sid] = message or _PAUSE_MESSAGE
+        ev = self._stop_events.get(sid)
+        if ev is not None:
+            ev.set()
+
     async def await_user_reply(
         self,
         request_id: str,
@@ -219,6 +237,9 @@ class Agent(DelegationMixin, LiveMixin, ContextMixin, PromptMixin, CompactionMix
         try:
             return await asyncio.wait_for(fut, timeout=600.0)
         except asyncio.TimeoutError:
+            # The user walked away: halt the turn and leave a pause note rather
+            # than resuming with an empty answer.
+            self.pause_turn(session_id)
             return ""
         finally:
             self._replies.pop(request_id, None)
@@ -319,11 +340,35 @@ class Agent(DelegationMixin, LiveMixin, ContextMixin, PromptMixin, CompactionMix
             await self.flat_plugins.on_start(self._ctx(session, turn_id, model, node=node, depth=depth))
             final = await self._loop(session, turn_id, stop, images, node=node, depth=depth)
             if stop.is_set():
-                self._persist_live_turn(session, status="interrupted")
+                pause = self._paused.pop(session.id, None)
+                if pause is not None:
+                    # Approval/ask timed out: leave a pause note as the turn's
+                    # final reply so the user sees the agent stopped and waits.
+                    await self._emit_for(session.id, turn_id, "turn.delta", delta=pause)
+                    final_text = await self.flat_plugins.on_message_out(pause) or pause
+                    if final is not None:
+                        final.text = pause
+                        final.steps = list(final.steps) + [{"kind": "text", "text": pause}]
+                        self._commit_history(session, final, final_text)
+                    else:
+                        self._persist_live_turn(session, status="interrupted")
+                    await self._emit_for(session.id, turn_id, "turn.finished", stop_reason="paused")
+                else:
+                    self._persist_live_turn(session, status="interrupted")
+                    await self._emit_for(session.id, turn_id, "turn.finished", stop_reason="stop")
             elif final is not None:
                 final_text = await self.flat_plugins.on_message_out(final.text) or ""
                 self._commit_history(session, final, final_text)
-            await self._emit_for(session.id, turn_id, "turn.finished", stop_reason="stop")
+                await self._emit_for(session.id, turn_id, "turn.finished", stop_reason="stop")
+            else:
+                await self._emit_for(session.id, turn_id, "turn.finished", stop_reason="stop")
+            if depth == 0 and final_text and not stop.is_set():
+                try:
+                    task = asyncio.create_task(self._memcapture(session.id, turn_id, text, final_text))
+                    self._memtasks.add(task)
+                    task.add_done_callback(self._memtasks.discard)
+                except Exception as exc:
+                    activity.record("debug", "brain", "memory capture scheduling failed", str(exc))
             activity.record(
                 "info", "brain",
                 _turn_summary(session, model, time.perf_counter() - started),
@@ -358,6 +403,7 @@ class Agent(DelegationMixin, LiveMixin, ContextMixin, PromptMixin, CompactionMix
             self._live_turns.pop(session.id, None)
             self._turns.pop(session.id, None)
             self._stop_events.pop(session.id, None)
+            self._paused.pop(session.id, None)
             self._reasoning.pop(turn_id, None)
             self._reasoning_sigs.pop(turn_id, None)
             # queue-send: chain any messages queued after the last tool round
@@ -366,6 +412,25 @@ class Agent(DelegationMixin, LiveMixin, ContextMixin, PromptMixin, CompactionMix
             if depth == 0:
                 await self._chain_queued(session.id)
 
+    async def _memcapture(self, session_id: str, turn_id: str, user_text: str,
+                          assistant_text: str) -> None:
+        try:
+            try:
+                from ..memory.autocapture import capture_turn
+            except ImportError:
+                if not self._memcapture_import_warned:
+                    self._memcapture_import_warned = True
+                    activity.record("debug", "brain", "memory capture unavailable")
+                return
+            candidates = await capture_turn(self, session_id, user_text, assistant_text, turn_id=turn_id)
+            for candidate in candidates:
+                content = candidate["content"]
+                kind = candidate["kind"]
+                await notify.emit("memory.captured", session_id=session_id, turn_id=turn_id,
+                                  content=content, importance=candidate["importance"], kind=kind)
+                activity.record("info", "brain", f"memory captured · {kind}", content)
+        except Exception as exc:
+            activity.record("debug", "brain", "memory capture failed", str(exc))
     @staticmethod
     def _anchor_notes(session: Session) -> list[tuple[int, Message]]:
         """Snapshot compaction-failure notes with their position, expressed as
@@ -527,19 +592,13 @@ class Agent(DelegationMixin, LiveMixin, ContextMixin, PromptMixin, CompactionMix
         messages = pre.get("messages", messages)
         if self.flat_plugins is not None:
             messages = await self.flat_plugins.before_llm(messages)
-        tools = self.registry.schemas_for_model()
-        # Node tools: a non-None allowlist scopes which toolsets the model sees.
-        if node is not None and node.tools is not None:
-            allowed = set(node.tools)
-            pass
-
+        tools = self.registry.schemas_for_model(session.id)
         registry = self.registry
         ctx = self._ctx(session, turn_id, model, node=node, depth=depth)
         registry.reset_breakers()
         assistant_text_parts: list[str] = []
         steps: list[dict[str, Any]] = []
         queue_splits: list[int] = []
-        last_assistant: dict[str, Any] | None = None
 
         while not stop.is_set():
             if stop.is_set():
@@ -741,7 +800,6 @@ class Agent(DelegationMixin, LiveMixin, ContextMixin, PromptMixin, CompactionMix
             if req_reasoning_sig:
                 assistant_msg["reasoning_signature"] = req_reasoning_sig
             messages.append(assistant_msg)
-            last_assistant = assistant_msg
 
             if had_error and not tool_calls:
                 # surface error, keep partial text

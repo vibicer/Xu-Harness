@@ -279,6 +279,11 @@ def build_web_frontend() -> None:
     die("xu: need bun or npm to build the web UI")
 
 
+def brain_env() -> dict:
+    """Child env for the brain process."""
+    return os.environ.copy()
+
+
 def cmd_start() -> None:
     if is_running():
         print(f"xu: already running (pid {read_pid()}) — try 'xu restart'")
@@ -300,7 +305,7 @@ def cmd_start() -> None:
              "--data-home", str(data_home()),
              "--web-dir", str(web_dist)],
             stdin=subprocess.DEVNULL, stdout=lf, stderr=subprocess.STDOUT,
-            cwd=REPO, **detach_kwargs(),
+            cwd=REPO, env=brain_env(), **detach_kwargs(),
         )
     pid_file().write_text(f"{proc.pid}\n")
 

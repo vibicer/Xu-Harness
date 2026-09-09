@@ -11,9 +11,11 @@
  *  `currentColor`, so every theme's palette drives the icons for free. Only
  *  override `size` at a call site when that one spot genuinely differs.
  */
+import type { PluginInfo } from "./types";
 import type { Component } from "svelte";
 import type { LucideProps } from "@lucide/svelte";
-import type { ViewName } from "./store.svelte";
+import type { BuiltinViewName, ViewName } from "./store.svelte";
+import { pluginViewName } from "./plugin-views.svelte";
 
 import ArrowRight from "@lucide/svelte/icons/arrow-right";
 import ArrowUp from "@lucide/svelte/icons/arrow-up";
@@ -33,8 +35,8 @@ import FoldVertical from "@lucide/svelte/icons/fold-vertical";
 import GitBranch from "@lucide/svelte/icons/git-branch";
 import GraduationCap from "@lucide/svelte/icons/graduation-cap";
 import Hash from "@lucide/svelte/icons/hash";
-import House from "@lucide/svelte/icons/house";
 import ListTodo from "@lucide/svelte/icons/list-todo";
+import House from "@lucide/svelte/icons/house";
 import MemoryStick from "@lucide/svelte/icons/memory-stick";
 import MessageSquare from "@lucide/svelte/icons/message-square";
 import MessageSquarePlus from "@lucide/svelte/icons/message-square-plus";
@@ -99,12 +101,24 @@ export const ICONS = {
 
 export type IconName = keyof typeof ICONS;
 
-/** One icon per view, shared by every layout: the same destination must not be
- *  a chat bubble in the dock and a house in the sidebar. */
-export const VIEW_ICONS: Record<ViewName, IconName> = {
+/** One icon per built-in view, shared by every layout: the same destination
+ *  must not be a chat bubble in the dock and a house in the sidebar. Plugin
+ *  views name their own glyph, resolved through `viewIcon`. */
+export const VIEW_ICONS: Record<BuiltinViewName, IconName> = {
   workspace: "message-square",
   sessions: "messages-square",
   config: "settings",
   logs: "scroll-text",
   onboarding: "rocket",
 };
+
+const isBuiltinView = (view: ViewName): view is BuiltinViewName => view in VIEW_ICONS;
+
+/** Glyph for any view, built-in or plugin-contributed. A plugin names a Lucide
+ *  slug it cannot verify, and `Icon` renders nothing for a key it doesn't
+ *  have — so an absent or renamed slug falls back to the puzzle. */
+export function viewIcon(view: ViewName, plugins: PluginInfo[]): IconName {
+  if (isBuiltinView(view)) return VIEW_ICONS[view];
+  const icon = plugins.find((p) => p.enabled && p.name === pluginViewName(view))?.ui?.icon;
+  return icon && icon in ICONS ? (icon as IconName) : "puzzle";
+}

@@ -54,9 +54,7 @@ class DelegationMixin:
             return
         now = time.monotonic()
         if not force and (now - self._delegations_saved) < self._SAVE_INTERVAL:
-            self._delegations_dirty = True
             return
-        self._delegations_dirty = False
         self._delegations_saved = now
         self.data_home.mkdir(parents=True, exist_ok=True)
         tmp = path.with_suffix(".tmp")

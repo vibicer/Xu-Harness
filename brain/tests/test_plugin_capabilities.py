@@ -635,11 +635,47 @@ def test_a_config_pane_is_a_legal_mount():
     assert validate_manifest(_ui_manifest(CONFIG_UI)) == []
 
 
-def test_an_unknown_mount_is_rejected():
-    """A typo'd mount would otherwise load clean and render nowhere — the
-    silent failure a plugin author cannot see from the outside."""
-    errors = validate_manifest(_ui_manifest({**CONFIG_UI, "mount": "sidebar"}))
-    assert any("is not one of" in e for e in errors)
+def test_a_wellformed_unknown_mount_is_valid():
+    """Mounts are open: a layout plugin may offer a spot the built-in shell
+    doesn't know, so membership is not checked — only the name's shape is."""
+    assert validate_manifest(_ui_manifest({**CONFIG_UI, "mount": "sidebar"})) == []
+
+
+def test_a_malformed_mount_is_rejected():
+    """A malformed name can never match a slot any layout offers, so it must
+    not load clean — the render-nowhere failure, caught at the door."""
+    for bad in ("Plug", "plug/x", "plug ", "", "../x"):
+        errors = validate_manifest(_ui_manifest({**CONFIG_UI, "mount": bad}))
+        assert any("mount" in e for e in errors), bad
+
+
+def test_an_unknown_mount_logs_a_warning_at_load(tmp_path, caplog):
+    """The open-mount contract's other half: legal to load, but the host says
+    so loudly, because rendering nowhere is a bug a plugin author cannot see
+    from the outside."""
+    host = PluginHost(HookBus())
+    _write_plugin(
+        tmp_path, "p", "def activate(ctx): pass\n",
+        manifest=_ui_manifest({**CONFIG_UI, "mount": "sidebar"}),
+    )
+    with caplog.at_level("WARNING"):
+        host.load_dir(tmp_path, _App())
+    assert any(
+        "not offered by any built-in layout" in r.message for r in caplog.records
+    )
+
+
+def test_a_view_mount_is_legal(tmp_path):
+    """`view` is a built-in mount: a plugin pane in the main view area, with
+    the same label/icon data rules as a config tab (label not required — the
+    shell falls back to the plugin name)."""
+    ui = {**CONFIG_UI, "mount": "view"}
+    assert validate_manifest(_ui_manifest(ui)) == []
+    host = PluginHost(HookBus())
+    _write_plugin(tmp_path, "p", "def activate(ctx): pass\n", manifest=_ui_manifest(ui))
+    (tmp_path / "p" / "ui.js").write_text("//", "utf-8")
+    host.load_dir(tmp_path, _App())
+    assert _record(host, "p")["ui"] == ui
 
 
 def test_the_tab_label_and_icon_reach_the_record(tmp_path):
@@ -695,3 +731,47 @@ def test_a_config_pane_serves_only_its_declared_module(tmp_path):
     assert host.ui_asset("p", "ui.js") == pkg / "ui.js"
     assert host.ui_asset("p", "secret.txt") is None
     assert host.ui_asset("p", "activate.py") is None
+
+
+def test_ui_assets_reach_the_record(tmp_path):
+    """Extra servable files ride along like label/icon: the server serves
+    only what the record carries, so dropped here they'd be unreachable."""
+    ui = {**CONFIG_UI, "assets": ["chart.js", "worker.js"]}
+    assert validate_manifest(_ui_manifest(ui)) == []
+    host = PluginHost(HookBus())
+    _write_plugin(tmp_path, "p", "def activate(ctx): pass\n", manifest=_ui_manifest(ui))
+    (tmp_path / "p" / "ui.js").write_text("//", "utf-8")
+    host.load_dir(tmp_path, _App())
+    assert _record(host, "p")["ui"]["assets"] == ["chart.js", "worker.js"]
+
+
+def test_a_non_bare_ui_asset_is_rejected():
+    """Assets are served straight off disk like ui.module — an entry that is
+    a path is a traversal bug, so it rejects at the door, not in the server."""
+    for bad in ("../evil", "/abs.js", "sub/dir.js", ""):
+        errors = validate_manifest(_ui_manifest({**CONFIG_UI, "assets": [bad]}))
+        assert any("assets" in e for e in errors), bad
+
+
+def test_non_list_ui_assets_are_rejected():
+    """The whole field must be a list of filenames; anything else is a
+    manifest typo, not a plugin data decision."""
+    for bad in ("chart.js", {"a": 1}, 3):
+        errors = validate_manifest(_ui_manifest({**CONFIG_UI, "assets": bad}))
+        assert any("assets" in e for e in errors), bad
+
+
+def test_a_declared_ui_asset_is_servable_but_nothing_undeclared_is(tmp_path):
+    """``ui.assets`` widens the door by exactly the names the manifest
+    declared — an undeclared file in the same dir stays unreachable."""
+    host = PluginHost(HookBus())
+    pkg = _write_plugin(
+        tmp_path, "p", "def activate(ctx): pass\n",
+        manifest=_ui_manifest({**CONFIG_UI, "assets": ["chart.js"]}),
+    )
+    (pkg / "ui.js").write_text("//", "utf-8")
+    (pkg / "chart.js").write_text("//", "utf-8")
+    (pkg / "undeclared.js").write_text("//", "utf-8")
+    host.load_dir(tmp_path, _App())
+    assert host.ui_asset("p", "chart.js") == pkg / "chart.js"
+    assert host.ui_asset("p", "undeclared.js") is None

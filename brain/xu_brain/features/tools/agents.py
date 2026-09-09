@@ -328,17 +328,14 @@ class AskTool(Tool):
         agent = ctx.agent
         if not hasattr(agent, "await_user_reply"):
             return ToolResult.err("user-reply channel unavailable")
-        try:
-            answer = await asyncio.wait_for(
-                agent.await_user_reply(
-                    request_id, question, args.get("options"), session_id=ctx.session_id
-                ),
-                timeout=600.0,
-            )
-        except asyncio.TimeoutError:
+        # ``await_user_reply`` enforces its own 600s timeout and pauses the
+        # turn (pause_turn) when it lapses, returning "" — a matching outer
+        # wait_for here would fire a hair earlier and swallow that pause.
+        answer = await agent.await_user_reply(
+            request_id, question, args.get("options"), session_id=ctx.session_id
+        )
+        if not answer:
             return ToolResult.err("user did not respond in time")
-        if answer is None:
-            return ToolResult.err("no reply")
         return ToolResult.ok(str(answer), raw=answer)
 
 

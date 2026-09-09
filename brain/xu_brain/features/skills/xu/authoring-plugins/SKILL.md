@@ -47,7 +47,7 @@ second copy of a hook.
 | `provides` | Slots this plugin fills. Unknown values warn but do not fail. |
 | `requires` | Slots that must exist first. |
 | `settings` | List of `{key, type, default, label?}`. |
-| `ui` | Optional frontend: `{module, element, mount}`. |
+| `ui` | Optional frontend: `{module, element, mount, label?, icon?, assets?}`. |
 
 Slots: `provider, tool, rpc, hook, memory, layout, panel, policy, skill,
 persona, theme`.
@@ -83,10 +83,13 @@ Add a `ui` block and ship the module beside the manifest:
 - `element` must contain a dash (custom-element rule) and be defined via
   `customElements.define`.
 - `mount` is a known spot: `statusbar` (a chip in the layout's status strip),
-  `config` (a pane in Config, opened by a tab the shell renders for you), or
-  `layout` (the whole shell). Adding a new one means editing `UI_MOUNTS` in
-  `api/manifest.py` *and* placing a `<PluginSlot>` where it belongs.
-- `label` + `icon` are the tab chrome for `mount: "config"`: the label defaults
+- `mount` is open: any lowercase-dashed name loads. Built-in spots: `statusbar`
+  (a chip in the layout's status strip), `config` (a pane in Config, opened by
+  a tab the shell renders for you), `view` (a nav entry + full view, entry
+  rendered from `ui.label`/`ui.icon`), `layout` (the whole shell). Any other
+  mount loads with a warning and renders only in a layout that offers a slot
+  with that name — a layout plugin renders other plugins' elements itself,
+  which is how it defines its own regions.
   to the plugin name, and the icon must name one the shell ships (`icons.ts`) or
   it falls back. The shell owns the `.cfg-pane` wrapper and shows/hides it per
   tab, so a config pane renders bare content and never asks which tab is open —

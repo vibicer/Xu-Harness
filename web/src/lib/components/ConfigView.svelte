@@ -8,6 +8,7 @@
   import PluginsPanel from "./config/PluginsPanel.svelte";
   import OrchestratePanel from "./config/OrchestratePanel.svelte";
   import DataPanel from "./config/DataPanel.svelte";
+  import MemoryPanel from "./config/MemoryPanel.svelte";
   import ThemesPanel from "./config/ThemesPanel.svelte";
   import Icon from "./Icon.svelte";
   import { ICONS, type IconName } from "../icons";
@@ -19,7 +20,7 @@ import type { PresetInfo } from "../types";
 
 /** Built-in panes, plus `plugin:<name>` for a pane a plugin contributes via
  *  `manifest.ui.mount: "config"`. */
-type CfgModule = "providers" | "agent" | "toolsets" | "skills" | "data" | "themes" | "orchestrate" | "notifications" | "plugins" | `plugin:${string}`;
+type CfgModule = "providers" | "agent" | "toolsets" | "skills" | "data" | "memory" | "themes" | "orchestrate" | "notifications" | "plugins" | `plugin:${string}`;
 /** One entry in the tab strip. */
 type CfgTab = { id: CfgModule; n: string; d: string; stamp: string; icon: IconName };
 
@@ -83,7 +84,8 @@ if (ret) { activeModule = ret; sessionStorage.removeItem("cfg-return"); }
   );
   const MODULES = $derived<CfgTab[]>(([
     { id: "agent", n: "Agent", d: "context, compression, approvals, timeout", stamp: "4", icon: "bot" },
-    { id: "data", n: "Data", d: "data home · personas · memory", stamp: `${brain.personas.length}P · ${brain.memories.length}M`, icon: "database" },
+    { id: "data", n: "Data", d: "data home · personas", stamp: `${brain.personas.length}P`, icon: "database" },
+    { id: "memory", n: "Memory", d: "MEMORY.md · mnemosyne digest · auto-capture", stamp: `${brain.memories.length}M`, icon: "memory-stick" },
     { id: "notifications", n: "Notifications", d: "desktop alerts — response done · run failed", stamp: notifyStamp(), icon: "bell" },
     { id: "orchestrate", n: "Orchestration", d: "agent-team presets", stamp: `${presets.length}P`, icon: "network" },
     { id: "plugins", n: "Plugins", d: "plugin packages in slots — toggle · hot-reload", stamp: `${brain.plugins.filter((a) => a.enabled).length}/${brain.plugins.length}`, icon: "puzzle" },
@@ -153,6 +155,7 @@ if (ret) { activeModule = ret; sessionStorage.removeItem("cfg-return"); }
   <PluginsPanel {activeModule} />
   <OrchestratePanel {activeModule} {presets} {loadPresets} />
   <DataPanel {activeModule} />
+  <MemoryPanel {activeModule} />
   <ThemesPanel {activeModule} />
 
   <!-- Plugin panes. The wrapper is the shell's own `.cfg-pane`, so a plugin

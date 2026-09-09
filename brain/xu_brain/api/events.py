@@ -23,6 +23,7 @@ EVENTS: tuple[str, ...] = (
     "turn.stopping",
     "turn.started",
     "turn.finished",
+    "memory.captured",
     # Legacy PluginBus.on_start(ctx) — fire-and-forget per turn (despite the name).
     "plugin.start",
 )

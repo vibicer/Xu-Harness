@@ -102,7 +102,7 @@ def test_documented_core_methods_still_exist() -> None:
     events = {
         "turn.started", "turn.delta", "turn.reasoning", "turn.tool", "turn.notice",
         "turn.queue", "turn.dequeue", "queue.cancelled", "turn.approval",
-        "turn.approval_resolved", "turn.finished", "turn.failed",
+        "turn.approval_resolved", "turn.finished", "turn.failed", "memory.captured",
         "context.updated", "state.updated", "memory.updated", "status.updated",
         "session.updated", "compaction.started", "compaction.done",
         "subagent.activity", "subagent.delta", "todo.updated",

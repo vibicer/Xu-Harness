@@ -89,7 +89,24 @@ function tryTable(
   return { html, endIndex: j - 1 };
 }
 
+/** Transcript markdown is re-rendered whenever the history array is replaced
+ * (every turn reload, every session switch), and Svelte's {@html} only skips
+ * the innerHTML write — the parse still runs. The render is pure, so cache it
+ * by source text: a reload becomes a Map lookup. Cap guards pathological
+ * sessions; clearing wholesale is fine because every miss just re-parses. */
+const MD_CACHE = new Map<string, string>();
+const MD_CACHE_CAP = 4000;
+
 export function renderMarkdown(src: string): string {
+  const hit = MD_CACHE.get(src);
+  if (hit !== undefined) return hit;
+  const out = mdToHtml(src);
+  if (MD_CACHE.size >= MD_CACHE_CAP) MD_CACHE.clear();
+  MD_CACHE.set(src, out);
+  return out;
+}
+
+function mdToHtml(src: string): string {
   const lines = src.split("\n");
   const html: string[] = [];
   let para: string[] = [];

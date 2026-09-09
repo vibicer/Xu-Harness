@@ -1,4 +1,5 @@
 import type { ApprovalCard, ChatMessage, MemoryEntry, Step, SubagentRun, StatePanel, TodoInfo } from "../types";
+import { approvalSummary } from "../components/chat/messages";
 import { EMPTY_DRAFT, type CompactionResult, type SessionStatus, type TabState, pushReasoning, pushText } from "./shared";
 import { bindSubRun } from "../subrun-bind";
 import type { Ctor, StoreCoreBase } from "./core.svelte";
@@ -194,6 +195,7 @@ export function EventsMixin<T extends Ctor<StoreCoreBase>>(Base: T) {
           resolved: null,
         };
         this.approvals = [...this.approvals.filter((a) => a.request_id !== card.request_id), card];
+        this.notifyAwaiting(card.session_id, approvalSummary(card));
         break;
       }
       case "turn.approval_resolved": {
@@ -371,6 +373,9 @@ export function EventsMixin<T extends Ctor<StoreCoreBase>>(Base: T) {
         if (sid && sid === this.activeSessionId) void this.refreshTodo();
         break;
       }
+      default:
+        // Everything unhandled falls through silently.
+        break;
     }
   }
   };

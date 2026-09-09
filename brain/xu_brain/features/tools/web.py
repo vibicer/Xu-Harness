@@ -6,7 +6,6 @@ Keeps the brain dependency-free when no key is set.
 """
 from __future__ import annotations
 
-import json
 import os
 import re
 from html import unescape
@@ -81,8 +80,8 @@ def _looks_like_shell(text: str) -> bool:
 
 
 def _browser_available() -> bool:
-    """Agent owns the browser — available iff we can resolve a Chrome/Chromium
-    binary (or an external CDP endpoint is configured)."""
+    """Agent owns the browser — available iff we can resolve a browser binary
+    (Chrome/Chromium) or an external CDP endpoint is configured."""
     if os.environ.get("XU_BROWSER_CDP_ENDPOINT"):
         return True
     from .browser import BrowserManager
@@ -140,7 +139,7 @@ async def _firecrawl_search(key: str, query: str, limit: int) -> ToolResult:
             data = r.json().get("data", [])
             lines = [f"- {d.get('title','?')}: {d.get('url')}\n  {d.get('description','')}" for d in data]
             return ToolResult.ok("\n".join(lines), raw=len(data))
-    except httpx.HTTPError as e:
+    except httpx.HTTPError:
         return await _ddg_search(query, limit)
 
 
