@@ -29,7 +29,14 @@ export class RpcError extends Error {
 interface Pending {
   resolve: (value: unknown) => void;
   reject: (err: RpcError) => void;
+  /** Deadline for this call; cleared when it settles. */
+  timer?: ReturnType<typeof setTimeout>;
 }
+
+/** Default deadline for an RPC. A wedged brain method must not leave the
+ *  promise (and its `pending` entry) hanging forever: the caller gets a typed
+ *  error instead of a UI action that never completes. Overridable per call. */
+const DEFAULT_CALL_TIMEOUT_MS = 60_000;
 
 type RpcMessage = RpcEnvelope | RpcNotification;
 
@@ -83,6 +90,7 @@ export class BrainClient {
       ) {
         const p = this.pending.get(msg.id)!;
         this.pending.delete(msg.id);
+        if (p.timer) clearTimeout(p.timer);
         const envelope = msg as RpcEnvelope;
         if (envelope.error) p.reject(new RpcError(envelope.error.code, envelope.error.message, envelope.error.data));
         else p.resolve(envelope.result);
@@ -95,7 +103,10 @@ export class BrainClient {
     ws.onclose = () => {
       this.connected = false;
       this.onStatusChange?.(false);
-      this.pending.forEach((p) => p.reject(new RpcError(-32000, "brain connection closed")));
+      this.pending.forEach((p) => {
+        if (p.timer) clearTimeout(p.timer);
+        p.reject(new RpcError(-32000, "brain connection closed"));
+      });
       this.pending.clear();
       if (!this.closedByUs) this.scheduleReconnect();
     };
@@ -117,17 +128,49 @@ export class BrainClient {
     this.ws?.close();
   }
 
-  call<T = unknown>(method: string, params?: Record<string, unknown>): Promise<T> {
+  call<T = unknown>(
+    method: string,
+    params?: Record<string, unknown>,
+    timeoutMs = DEFAULT_CALL_TIMEOUT_MS,
+  ): Promise<T> {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
       return Promise.reject(new RpcError(-32000, "brain not connected"));
     }
     const id = this.nextId++;
     return new Promise<T>((resolve, reject) => {
+      // Settle once per call: a late reply, an expiry, or a `send` throw must
+      // not fire twice. The guard is a local flag, not the map entry — the
+      // message handler removes the entry before it resolves the promise.
+      let settled = false;
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const settle = (finish: () => void): void => {
+        if (settled) return;
+        settled = true;
+        this.pending.delete(id);
+        if (timer) clearTimeout(timer);
+        finish();
+      };
+      if (timeoutMs > 0) {
+        timer = setTimeout(() => {
+          settle(() =>
+            reject(new RpcError(-32001, `brain call timed out after ${timeoutMs}ms: ${method}`)),
+          );
+        }, timeoutMs);
+      }
       this.pending.set(id, {
-        resolve: (v: unknown) => resolve(v as T),
-        reject,
+        resolve: (v: unknown) => settle(() => resolve(v as T)),
+        reject: (e: RpcError) => settle(() => reject(e)),
+        timer,
       });
-      this.ws!.send(JSON.stringify({ jsonrpc: "2.0", id, method, params: params ?? {} }));
+      try {
+        this.ws!.send(JSON.stringify({ jsonrpc: "2.0", id, method, params: params ?? {} }));
+      } catch (e) {
+        // `send` throws synchronously on a closing socket. Reject with a typed
+        // error and drop the entry instead of leaking it and surfacing a raw
+        // DOMException.
+        const cause = e instanceof Error ? e.message : String(e);
+        settle(() => reject(new RpcError(-32000, `brain send failed: ${cause}`)));
+      }
     });
   }
 

@@ -101,3 +101,5 @@ class ToolContext:
     # Shared orchestration-preset store (None if not wired); used by
     # orchestration tools like ``preset_create``.
     presets: PresetStore | None = None
+    # Filesystem backup and rollback manager for undo/redo
+    backups: Any = None

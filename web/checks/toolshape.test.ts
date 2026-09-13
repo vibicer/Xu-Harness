@@ -1,6 +1,6 @@
 // Runnable check for tool-chip shaping: `node checks/toolshape.test.ts`
 import assert from "node:assert/strict";
-import { toolShape, isReadOnly, argValue, headline, target, fileTab, splitExit, lineCount } from "../src/lib/toolshape.ts";
+import { toolShape, isReadOnly, argValue, headline, target, displayLocation, displayDescription, fileTab, splitExit, lineCount } from "../src/lib/toolshape.ts";
 
 // 1. Shape classification
 assert.equal(toolShape("bash"), "terminal");
@@ -64,4 +64,18 @@ assert.deepEqual(splitExit(null), { body: "", exit: "" });
 assert.equal(lineCount("a\n\nb\n"), 2);
 assert.equal(lineCount(null), 0);
 
-console.log("toolshape: all checks passed");
+// 6. Display location: execution tools use cwd, scoped tools use their target.
+assert.equal(displayLocation("bash", "command=npm run build", "/home/vibi/ProjectAI/Xu/web"), "/home/vibi/ProjectAI/Xu/web");
+assert.equal(displayLocation("read", "path=web/src/lib/toolshape.ts", "/ignored"), "web/src/lib/toolshape.ts");
+assert.equal(displayLocation("grep", "pattern=TODO path=web/src", "/ignored"), "web/src");
+assert.equal(displayLocation("grep", "pattern=TODO", "/work"), "/work");
+assert.equal(displayLocation("web_search", "query=Svelte runes", "/work"), "");
+assert.equal(displayLocation("browse", "url=https://example.com", "/work"), "https://example.com");
+assert.equal(displayLocation("delegate", "label=reviewer prompt=Review", "/work"), "reviewer");
+
+// 7. AI-written notes win; legacy rows retain their literal prior target.
+assert.equal(displayDescription("bash", "command=npm test", "Check regressions", "/work"), "Check regressions");
+assert.equal(displayDescription("bash", "command=npm test", undefined, "/work"), "npm test");
+assert.equal(displayDescription("read", "path=src/app.ts", undefined, "/work"), "");
+assert.equal(displayDescription("web_search", "query=Svelte runes", undefined, "/work"), "Svelte runes");
+assert.equal(displayDescription("read", "path=x", "  Read\n app  ", "/work"), "Read app");

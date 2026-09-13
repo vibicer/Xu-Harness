@@ -12,12 +12,20 @@ export interface SessionInfo {
 }
 
 export interface Step {
-kind: "text" | "tool" | "reasoning" | "compaction";
+kind: "text" | "tool" | "reasoning" | "compaction" | "guard";
 text?: string;
 tool?: string;
 args?: string;
+/** Concise, action-specific AI-written display text, not an executable arg. */
+note?: string;
+/** Execution-start cwd (persistent bash cwd; session cwd for other tools). */
+cwd?: string;
 status?: "running" | "ok" | "error";
 elapsed?: number | null;
+/** epoch ms this reasoning segment began streaming — client-side only, so the
+ *  live counter ticks the thought itself and the settled row can show the same
+ *  span the brain persists as `elapsed`. */
+t0?: number;
 output?: string | null;
 /** provider tool-call id — settles the right chip when siblings run at once. */
 call_id?: string;
@@ -31,6 +39,8 @@ subagent_count?: number | null;
  *  its alt text (the tool's caption, else the filename). */
 image?: string | null;
 image_alt?: string | null;
+/** loop guard row: the rung the turn just tripped, kept in the timeline so a
+ *  reader sees the warning fired (the model got its own system reminder). */
 /** compaction rows: outcome + size stats for the transcript divider. */
 ok?: boolean;
 mode?: "auto" | "manual";
@@ -39,6 +49,8 @@ after?: number;
 dropped?: number;
 error?: string;
 count?: number;
+/** guard rows: 1 = the nudge, 2 = its escalation (louder chip). */
+tier?: number;
 ts?: number;
 }
 
@@ -90,6 +102,9 @@ export interface GitDetail extends GitStatus {
 
 export interface StatePanel {
   model: string | null;
+  /** Per-session reasoning effort sent upstream; null = send no field at all
+   *  and let the provider (or the router in front of it) apply its default. */
+  reasoning_effort?: string | null;
   persona: string | null;
   rules: string[];
   context: number;
@@ -270,6 +285,10 @@ memory_mnemosyne_embeddings?: boolean;
   /** Turn-tail auto-capture of durable facts. */
   memory_autocapture?: boolean;
   memory_capture_min_interval?: number;
+  /** Loop guard: remind a turn that keeps repeating itself (Config → Agent). */
+  loop_guard?: boolean;
+  loop_guard_reasoning?: boolean;
+  loop_guard_thresholds?: number[];
 }
 
 export interface TodoItem {

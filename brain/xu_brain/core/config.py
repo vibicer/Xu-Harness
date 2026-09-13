@@ -36,8 +36,22 @@ _DEFAULTS: dict[str, Any] = {
     "prune_keep": 30,  # cap on saved sessions — oldest is pruned when exceeded (count, not age)
     "retry_max": 10,  # max provider-retry attempts per turn on transient error
     "retry_interval": 3,  # base backoff seconds; grows +2 each attempt (3,5,7,9…)
+    # Loop guard: remind a turn that keeps repeating itself instead of letting
+    # it loop on. Advisory — the reminder is a nudge to change approach, never
+    # a block. Trip thresholds are consecutive-identical-round counts; the
+    # first is the nudge, the second the escalation.
+    "loop_guard": True,
+    "loop_guard_reasoning": True,  # also watch rounds that re-derive the same thought
+    "loop_guard_thresholds": [3, 5],
     "max_tokens": None,  # global default max_tokens (None = provider default)
     "session_max_tokens": {},  # {session_id: int|None} — per-session override
+    # Reasoning effort: how hard a thinking model works before answering.
+    # One ladder spans every provider a relay may route to (the router's own
+    # default applies when this is unset), so the value is a plain string
+    # rather than a fixed enum: "off" through "max". None = send nothing and
+    # let the provider or the router in front of it decide.
+    "reasoning_effort": None,  # global default; None = don't send the field
+    "session_reasoning_effort": {},  # {session_id: str|None} — per-session override
     # Secrets belong in config, not env — Config is the source of truth
     # (agent env is only a fallback). Firecrawl key may be a single str or a
     # comma-separated / list pool rotated round-robin (see tools/web.py).
@@ -129,6 +143,30 @@ class Config:
             return smt[session_id]
         return self._values.get("max_tokens")
 
+    def session_reasoning_effort(self, session_id: str) -> str | None:
+        """Per-session override → global default → None (send nothing).
+
+        An absent value is not "medium" or any other guess: it means the
+        request carries no effort at all, which leaves the decision to the
+        provider — or, when a relay sits in front, to that relay's own
+        default. That is the one case where a router's configuration wins,
+        so the picker's "Default" entry maps here rather than to a level.
+        """
+        sre = self._values.get("session_reasoning_effort", {})
+        if session_id in sre:
+            return sre[session_id]
+        return self._values.get("reasoning_effort")
+
+    def set_session_reasoning_effort(self, session_id: str, effort: str | None) -> None:
+        """Pin one session's reasoning effort; ``None`` clears it back to the global."""
+        sre = dict(self._values.get("session_reasoning_effort", {}))
+        if effort is None:
+            sre.pop(session_id, None)
+        else:
+            sre[session_id] = effort
+        self._values["session_reasoning_effort"] = sre
+        self.save()
+
     def toolset_enabled(self, toolset: str, default: bool = True) -> bool:
         return self._values.get("toolsets", {}).get(toolset, default)
 
@@ -202,6 +240,32 @@ class Config:
         retried without the image, and never poisons the following turns."""
         v = self._values.get("vision_model")
         return str(v) if v else None
+
+    def loop_guard(self) -> bool:
+        """Remind a turn that keeps repeating itself instead of letting it loop."""
+        return bool(self._values.get("loop_guard", True))
+
+    def loop_guard_reasoning(self) -> bool:
+        """Also watch rounds whose thinking re-derives the same thought."""
+        return bool(self._values.get("loop_guard_reasoning", True))
+
+    def loop_guard_thresholds(self) -> list[int]:
+        """Consecutive-identical-round trip points: nudge at the first, escalate
+        at the second. Tolerates a hand-edited string and blanks."""
+        raw = self._values.get("loop_guard_thresholds")
+        if isinstance(raw, str):
+            raw = [p.strip() for p in raw.replace(";", ",").split(",") if p.strip()]
+        if not isinstance(raw, (list, tuple)):
+            raw = []
+        out: list[int] = []
+        for item in raw:
+            try:
+                n = int(item)
+            except (TypeError, ValueError):
+                continue
+            if 2 <= n <= 50 and n not in out:
+                out.append(n)
+        return sorted(out) or [3, 5]
 
     def model_fallbacks(self) -> list[str]:
         """Global ordered backup models, tried after the turn's own model (and
@@ -323,7 +387,11 @@ class Config:
     def delete_session(self, session_id: str) -> None:
         """Remove persisted settings associated with a deleted session."""
         changed = False
-        for key in ("session_model", "session_provider", "session_persona", "session_max_tokens", "session_rules", "session_preset", "session_skills", "session_tools"):
+        for key in (
+            "session_model", "session_provider", "session_persona", "session_max_tokens",
+            "session_reasoning_effort", "session_rules", "session_preset", "session_skills",
+            "session_tools",
+        ):
             values = dict(self._values.get(key, {}))
             if session_id in values:
                 values.pop(session_id)

@@ -324,12 +324,18 @@ if (presetId === id) { startNewPreset(); presetOpen = false; }
 
     {#if presetOpen}
       <div class="cfg-sec" id="preset-editor">
-        <div class="cfg-sec-hd">
-          <span class="t">{presetId ? "EDIT PRESET" : "NEW PRESET"}</span>
-          <span class="d">orchestrator + sub-agents · staged until you save</span>
-          <span class="sp"></span>
-          <span class="k-saved" class:on={!!presetMsg && !presetErr}>{presetErr ? "" : presetMsg}</span>
-        </div>
+<div class="cfg-sec-hd">
+<span class="t">{presetId ? "EDIT PRESET" : "NEW PRESET"}</span>
+<span class="d">orchestrator + sub-agents · staged until you save</span>
+<span class="sp"></span>
+<span class="k-saved" class:on={!!presetMsg && !presetErr}>{presetErr ? "" : presetMsg}</span>
+{#if presetDirty || presetErr}
+<button type="button" class="k-btn ghost sm" disabled={presetSaving || !presetDirty}
+onclick={() => void discardPreset()}>discard</button>
+<button type="button" class="k-btn pri sm" disabled={presetSaving || !presetDirty}
+onclick={() => void savePreset()}>{presetSaving ? "…" : "SAVE PRESET"}</button>
+{/if}
+</div>
 
         <div class="cfg-row">
           <div class="label">preset name<small>how the preset is listed in the session's Agent State panel</small></div>
@@ -365,9 +371,23 @@ if (presetId === id) { startNewPreset(); presetOpen = false; }
                 {@render agentFields(c)}
               </div>
             {/each}
-          {/if}
-        </div>
-      </div>
+{/if}
+</div>
+
+<div class="preset-footer">
+{#if presetDirty || presetErr}
+<span class="st">{presetErr ? presetMsg : "unsaved preset changes"}</span>
+<span class="sp"></span>
+<button type="button" class="k-btn ghost" disabled={presetSaving || !presetDirty}
+onclick={() => void discardPreset()}>discard</button>
+<button type="button" class="k-btn pri" disabled={presetSaving || !presetDirty}
+onclick={() => void savePreset()}>{presetSaving ? "…" : "SAVE PRESET"}</button>
+{:else}
+<span class="sp"></span>
+<button type="button" class="k-btn ghost" onclick={() => (presetOpen = false)}>done</button>
+{/if}
+</div>
+</div>
     {/if}
 
 

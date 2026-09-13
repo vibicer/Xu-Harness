@@ -8,10 +8,12 @@
   import GitChip from "../GitChip.svelte";
   import PluginSlot from "../PluginSlot.svelte";
   import Icon from "../Icon.svelte";
+  import { touch } from "../../touch.svelte";
   import QueuedTurns from "./QueuedTurns.svelte";
 
   // ---- composer send pipeline ----
   let input = $state("");
+  let sendError = $state<string | null>(null);
   let fileInputEl: HTMLInputElement | null = null;
   // Attached image data URLs, sent with the next message. The pending-images
   // strip sits between transcript and composer, so the shell renders it from
@@ -43,17 +45,27 @@ el.style.height = el.scrollHeight + "px";
     const text = input.trim();
     const images = [...pendingImages];
     if (!text && images.length === 0) return;
+    // Order matters: check `busy` BEFORE clearing anything. A second Enter
+    // inside the in-flight window used to wipe the box and then return, so the
+    // text was silently dropped. The RPC already running owns this turn — leave
+    // the draft in the box (a send while the brain is mid-turn is queued
+    // server-side on a later round, not this one).
+    if (busy) return;
     input = "";
     pendingImages = [];
+    sendError = null;
     // sending is an explicit "take me to the live edge" — override nearBottom
     void tick().then(onsend);
-    // busy only guards the RPC in flight — a send while the brain is mid-turn
-    // is queued server-side and flushed on the next tool round.
-    if (busy) return;
     busy = true;
     try {
       await brain.send(text, images.length ? images : undefined);
     } catch (e) {
+      // The brain rolls back its optimistic row and rethrows: a failed send
+      // must be visible and must not eat what the user typed. Put the text and
+      // attachments back and say so inline; the error clears on the next send.
+      input = text;
+      pendingImages = images;
+      sendError = e instanceof Error ? e.message : String(e);
       console.error("send failed", e);
     } finally {
       busy = false;
@@ -64,9 +76,35 @@ el.style.height = el.scrollHeight + "px";
   async function onFilesChosen(files: FileList | null): Promise<void> {
     if (!files) return;
     const { images, texts, skipped } = await readAttachments(files);
-    if (images.length) pendingImages = [...pendingImages, ...images];
+    if (images.length) {
+      // Dedupe on insert: the same attachment twice yields two identical data
+      // URLs, and the keyed each-blocks in PendingImages / Transcript then
+      // throw `each_key_duplicate` — taking the strip (and the transcript)
+      // down. Guard here so a duplicate never enters the strip at all.
+      const seen = new Set(pendingImages);
+      const fresh = images.filter((img) => {
+        if (seen.has(img)) return false;
+        seen.add(img);
+        return true;
+      });
+      if (fresh.length) pendingImages = [...pendingImages, ...fresh];
+    }
     if (texts.length) input = input ? `${input}\n${texts.join("")}` : texts.join("");
     if (skipped.length) console.warn("skipped attachments:", skipped.join(", "));
+    void tick().then(() => { if (composerEl) { autoresize(composerEl); composerEl.focus(); } });
+  }
+
+  /** A queued message the user pulled back to edit. Its queue row is already
+   *  gone (the caller cancelled it server-side), so this only restores the
+   *  content into the box — and appends rather than clobbers, so text typed
+   *  since the send is never lost. */
+  function restoreQueued(q: { text: string; images?: string[] }): void {
+    input = input.trim() ? `${input}\n${q.text}` : q.text;
+    if (q.images?.length) {
+      const seen = new Set(pendingImages);
+      const fresh = q.images.filter((img) => !seen.has(img));
+      if (fresh.length) pendingImages = [...pendingImages, ...fresh];
+    }
     void tick().then(() => { if (composerEl) { autoresize(composerEl); composerEl.focus(); } });
   }
 
@@ -101,7 +139,7 @@ el.style.height = el.scrollHeight + "px";
 </script>
 
 <div id="composer-wrap">
-  <QueuedTurns />
+  <QueuedTurns onedit={restoreQueued} />
   {#if brain.todos.phases.length}
     <!-- Collapsed by default: a small badge, not a full-width bar. The badge
          shows done/total and turns amber while an item is in progress. -->
@@ -150,17 +188,27 @@ el.style.height = el.scrollHeight + "px";
     </div>
   {/if}
   <div id="composer">
+  {#if sendError}
+    <div class="composer-error" role="alert">
+      <Icon name="circle-alert" size={12} />
+      <span>send failed — {sendError} — your message was kept; press Enter to retry</span>
+    </div>
+  {/if}
   <div id="composer-box">
     <span class="prompt">&gt;_</span>
     <textarea
       id="composer-input"
       bind:this={composerEl}
       rows="1"
-      placeholder="Message… (Enter to send, Shift+Enter for newline)"
+      placeholder={touch.coarse ? "Message…" : "Message… (Enter to send, Shift+Enter for newline)"}
       bind:value={input}
       oninput={(e) => autoresize(e.currentTarget)}
       onkeydown={(e) => {
-        if (e.key === "Enter" && !e.shiftKey) {
+        /* Enter sends on a keyboard; on a soft keyboard it must stay a newline.
+           A phone has no Shift+Enter, so sending Enter there would make a
+           two-line message impossible to write — the send button is the
+           sender. Matches the `(pointer: coarse)` query in theme.css. */
+        if (e.key === "Enter" && !e.shiftKey && !touch.coarse) {
           e.preventDefault();
           void send();
         }
@@ -183,7 +231,7 @@ el.style.height = el.scrollHeight + "px";
         disabled={input.trim() === "" && pendingImages.length === 0}
         onclick={() => void send()}
       >
-        <Icon name="send" size={16} />
+        <Icon name="arrow-right" size={16} />
       </button>
       {#if brain.draft !== null}
         <button
@@ -192,7 +240,7 @@ el.style.height = el.scrollHeight + "px";
           aria-label="Stop turn"
           onclick={() => void brain.stop()}
         >
-          <Icon name="circle-stop" size={16} />
+          <Icon name="square" size={13} fill="currentColor" />
         </button>
       {/if}
     </div>
@@ -264,4 +312,17 @@ el.style.height = el.scrollHeight + "px";
   .context-metrics .metric.projected .value { color: var(--cyan); }
   .context-metrics .metric.window .value { color: var(--faint); }
   .context-metrics .arrow { display: inline-flex; align-items: center; color: var(--faint); }
+  /* A failed send: inline, above the box, so it is visible without a toast
+     system. Theme tokens only. */
+  .composer-error {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin: 0 0 8px;
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--danger);
+    min-width: 0;
+    word-break: break-word;
+  }
 </style>

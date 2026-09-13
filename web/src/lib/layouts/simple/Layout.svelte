@@ -81,14 +81,23 @@
   function onKeydown(event: KeyboardEvent): void {
     const el = event.target as HTMLElement | null;
     const typing = !!el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.isContentEditable);
-    if (event.key === "Escape" && !typing && brain.view !== "onboarding") {
+    // A dialog renders above the layout and may never see this key, so acting
+    // on Escape would navigate the page out from under an open modal. The same
+    // `[aria-modal="true"]` check guards the chat's global handler.
+    const modalOpen = document.querySelector('[aria-modal="true"]') !== null;
+    if (event.key === "Escape" && !typing && !modalOpen && brain.view !== "onboarding") {
+      if (railOpen) {
+        event.preventDefault();
+        railOpen = false;
+        return;
+      }
       if (brain.view !== "workspace") {
         event.preventDefault();
         brain.setView("workspace");
         return;
       }
     }
-    if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "n") {
+    if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "n" && !typing) {
       event.preventDefault();
       void newChat();
     }
@@ -132,6 +141,19 @@
     brain.requestSubRunId = run.id;
   }
   let aboutOpen = $state(false);
+  // The rail is a column on a wide screen and an overlay on a narrow one (see
+  // the ≤1080 block in simple.css), so it needs a closed state — without one it
+  // covers 316px of a 390px chat. `false` is only honoured below 1080px; above
+  // it the rail is in flow and CSS ignores this class entirely.
+  let railOpen = $state(false);
+  // Tapping STATE from Config/Sessions/Logs should open the drawer over the
+  // chat, not flip a flag on a view that has no rail — otherwise the drawer is
+  // already open the next time the user returns to the workspace. Mirrors the
+  // default layout's toggleAstate.
+  function toggleRail(): void {
+    if (!railOpen) brain.setView("workspace");
+    railOpen = !railOpen;
+  }
 
 </script>
 
@@ -189,6 +211,20 @@
           {/if}
           <span class="simple-meta" title="brain memory usage"><Icon name="memory-stick" size={13} /> {ramText}</span>
           <span class="simple-meta" title="active session id"><Icon name="hash" size={13} /> {brain.session?.id ?? "—"}</span>
+          <button
+            id="simple-rail-toggle"
+            type="button"
+            class="simple-rail-toggle"
+            aria-label="Agent state"
+            aria-controls="simple-rail"
+            aria-expanded={railOpen}
+            class:active={railOpen}
+            title="Agent state"
+            onclick={toggleRail}
+          >
+            <Icon name="fold-vertical" size={15} />
+            <span class="lbl">state</span>
+          </button>
           <div class="simple-links" role="status" aria-label="Channel status">
             <span class:offline={!brain.connected} title="Brain"><i></i><span class="lbl">brain</span></span>
           </div>
@@ -224,7 +260,10 @@
 
         <!-- Chat fills the viewport and scrolls itself, so the composer stays put
              instead of drifting down a page-length dashboard. -->
-        <div class="simple-work">
+        <div class="simple-work" class:rail-open={railOpen}>
+          {#if railOpen}
+            <button class="simple-rail-backdrop" type="button" aria-label="Close agent state" onclick={() => (railOpen = false)}></button>
+          {/if}
           <section class="simple-card simple-chat-card">
             {#if brain.session}
               <Chat />
@@ -237,9 +276,10 @@
             {/if}
           </section>
 
-            <aside class="simple-card simple-rail" aria-label="Agent state">
+            <aside id="simple-rail" class="simple-card simple-rail" aria-label="Agent state">
               <div class="simple-rail-head">
                 <h2>Agent state</h2>
+                <button class="simple-rail-close" type="button" aria-label="Close agent state" title="Close (Esc)" onclick={() => (railOpen = false)}><Icon name="x" size={14} /></button>
               </div>
               <AgentState />
             </aside>

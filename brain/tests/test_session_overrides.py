@@ -13,6 +13,7 @@ Guarantees:
 - skills: catalog overlay, prompt injection on/off, stale override safe
 - RPCs: session-scoped set never mutates the global state
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -29,6 +30,7 @@ from xu_brain.features.skills import SkillState
 @pytest.fixture()
 def data_home(tmp_path: Path) -> Path:
     return tmp_path / "xu"
+
 
 # ---------------------------------------------------------------------------
 # Config: per-session override stores
@@ -123,11 +125,15 @@ def test_schemas_for_model_hide_session_disabled(tmp_path: Path) -> None:
 
 def test_run_denies_session_disabled_tool(tmp_path: Path) -> None:
     reg = _registry(tmp_path)
-    reg.session_overrides = lambda sid: ({"demo_b": False} if sid == "s1" else {})
+    reg.session_overrides = lambda sid: {"demo_b": False} if sid == "s1" else {}
     ctx = types.SimpleNamespace(session_id="s1")
 
+    async def emit(event: str, **kw: object) -> None:
+        assert event == "turn.tool"
+        assert kw["status"] == "error"
+
     async def go():
-        return await reg.run("demo_b", {}, ctx, emit=lambda *a, **k: None)
+        return await reg.run("demo_b", {}, ctx, emit=emit)
 
     result = asyncio.run(go())
     assert result.error is True

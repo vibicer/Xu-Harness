@@ -44,8 +44,8 @@ def test_run_bounded_is_all_settled():
 
 def test_delegate_batch_runs_tasks_concurrently_and_keeps_failures():
     from types import SimpleNamespace
+
     from xu_brain.features.tools import agents as A
-    from xu_brain.features.tools.base import ToolResult
 
     class Agent:
         async def run_subtask(self, prompt, ctx, **kwargs):
@@ -100,3 +100,97 @@ def test_run_bounded_cancellation_stops_workers():
         return finished
 
     assert asyncio.run(scenario())
+
+def test_partition_tool_waves_pure_reads():
+    from xu_brain.features.agent.scheduler import partition_tool_waves
+
+    calls = [
+        ({"id": "c1"}, {}, "read", {"path": "a.py"}),
+        ({"id": "c2"}, {}, "read", {"path": "b.py"}),
+        ({"id": "c3"}, {}, "grep", {"pattern": "foo", "path": "c.py"}),
+        ({"id": "c4"}, {}, "glob", {"pattern": "*.py"}),
+        ({"id": "c5"}, {}, "git", {"action": "status"}),
+        ({"id": "c6"}, {}, "delegate", {"prompt": "subtask"}),
+    ]
+    waves = partition_tool_waves(calls, cwd="/repo")
+    assert len(waves) == 1
+    assert len(waves[0]) == 6
+
+
+def test_partition_tool_waves_disjoint_edits():
+    from xu_brain.features.agent.scheduler import partition_tool_waves
+
+    calls = [
+        ({"id": "c1"}, {}, "edit", {"patch": "[a.py#TAG]\nPUT 1:\n+new"}),
+        ({"id": "c2"}, {}, "edit", {"patch": "[b.py#TAG]\nPUT 1:\n+new"}),
+        ({"id": "c3"}, {}, "write", {"path": "c.py", "content": "hello"}),
+        ({"id": "c4"}, {}, "read", {"path": "d.py"}),
+    ]
+    waves = partition_tool_waves(calls, cwd="/repo")
+    assert len(waves) == 1
+    assert len(waves[0]) == 4
+
+
+def test_partition_tool_waves_conflicting_file_rw():
+    from xu_brain.features.agent.scheduler import partition_tool_waves
+
+    calls = [
+        ({"id": "c1"}, {}, "write", {"path": "a.py", "content": "1"}),
+        ({"id": "c2"}, {}, "read", {"path": "a.py"}),
+    ]
+    waves = partition_tool_waves(calls, cwd="/repo")
+    assert len(waves) == 2
+    assert [c[2] for c in waves[0]] == ["write"]
+    assert [c[2] for c in waves[1]] == ["read"]
+
+
+def test_partition_tool_waves_conflicting_edits_same_file():
+    from xu_brain.features.agent.scheduler import partition_tool_waves
+
+    calls = [
+        ({"id": "c1"}, {}, "edit", {"patch": "[a.py#111111]\nPUT 1:\n+v1"}),
+        ({"id": "c2"}, {}, "edit", {"patch": "[a.py#222222]\nPUT 2:\n+v2"}),
+    ]
+    waves = partition_tool_waves(calls, cwd="/repo")
+    assert len(waves) == 2
+    assert waves[0] == [calls[0]]
+    assert waves[1] == [calls[1]]
+
+
+def test_partition_tool_waves_barrier_bash():
+    from xu_brain.features.agent.scheduler import partition_tool_waves
+
+    calls = [
+        ({"id": "c1"}, {}, "read", {"path": "a.py"}),
+        ({"id": "c2"}, {}, "bash", {"command": "pytest"}),
+        ({"id": "c3"}, {}, "read", {"path": "b.py"}),
+    ]
+    waves = partition_tool_waves(calls, cwd="/repo")
+    assert len(waves) == 3
+    assert [c[2] for c in waves[0]] == ["read"]
+    assert [c[2] for c in waves[1]] == ["bash"]
+    assert [c[2] for c in waves[2]] == ["read"]
+
+
+def test_partition_tool_waves_git_read_vs_mutation():
+    from xu_brain.features.agent.scheduler import partition_tool_waves
+
+    calls = [
+        ({"id": "c1"}, {}, "git", {"action": "status"}),
+        ({"id": "c2"}, {}, "git", {"action": "diff"}),
+        ({"id": "c3"}, {}, "git", {"action": "commit", "message": "feat: test"}),
+        ({"id": "c4"}, {}, "git", {"action": "log"}),
+    ]
+    waves = partition_tool_waves(calls, cwd="/repo")
+    assert len(waves) == 3
+    assert [c[2] for c in waves[0]] == ["git", "git"]
+    assert [c[2] for c in waves[1]] == ["git"]
+    assert [c[2] for c in waves[2]] == ["git"]
+
+
+def test_partition_tool_waves_empty_and_single():
+    from xu_brain.features.agent.scheduler import partition_tool_waves
+
+    assert partition_tool_waves([], cwd="/repo") == []
+    single = [({"id": "c1"}, {}, "read", {"path": "a.py"})]
+    assert partition_tool_waves(single, cwd="/repo") == [single]

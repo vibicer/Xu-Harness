@@ -16,17 +16,25 @@
   // composer's attach pipeline; rendered by the strip below the transcript.
   let pendingImages: string[] = $state([]);
 
-  // Focus composer on mount / view change, and when any printable key is
-  // pressed while focus isn't already in an editable element.
+  // Focus composer on mount / view change / session change, and when any
+  // printable key is pressed while focus isn't already in an editable element.
   $effect(() => {
     void brain.view; // refocus when switching views
-    void brain.messages; // refocus after a session (re)loads
-    if (brain.view === "workspace") void tick().then(() => composerEl?.focus());
+    void brain.session?.id; // ...and on a session switch — NOT on every turn
+    if (brain.view !== "workspace") return;
+    // A finished turn replaces brain.messages; depending on that used to yank
+    // focus out of a rules textarea or a search box mid-edit.
+    const a = document.activeElement as HTMLElement | null;
+    if (a && (a.tagName === "INPUT" || a.tagName === "TEXTAREA" || a.tagName === "SELECT" || a.isContentEditable)) return;
+    void tick().then(() => composerEl?.focus());
   });
 
   $effect(() => {
     function onKey(e: KeyboardEvent): void {
       if (e.ctrlKey || e.metaKey || e.altKey) return;
+      // A modal owns the keyboard: typing inside it must not pull focus to the
+      // composer behind the overlay.
+      if (document.querySelector('[aria-modal="true"]')) return;
       const t = e.target as HTMLElement | null;
       const inEditable =
         t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.tagName === "SELECT" || t.isContentEditable);
@@ -145,18 +153,7 @@
       if (thinkingBody) thinkingBody.scrollTop = thinkingBody.scrollHeight;
     });
   });
-  const thinking = $derived(busy || brain.isBusy(brain.session?.id ?? "") || brain.draft !== null);
-
-  // dancing stick figure for the live "thinking" label (tool chips own their
-  // own spinner — see ToolChip.svelte)
-  const DANCE = ["╰(°▽°)╯", "┐(°▽°)┌", "┌(°▽°)┐", "╮(°▽°)╭"];
-  let danceFrame = $state(0);
-  $effect(() => {
-    if (!thinking) return;
-    const d = setInterval(() => (danceFrame = (danceFrame + 1) % DANCE.length), 160);
-    return () => clearInterval(d);
-  });
-  const dancer = $derived(DANCE[danceFrame]);
+  const working = $derived(busy || brain.isBusy(brain.session?.id ?? "") || brain.draft !== null);
 
   // live reasoning body ref: keep its inner scroll following the stream
   let thinkingBody: HTMLDivElement | null = $state(null);
@@ -172,7 +169,7 @@
   }
 </script>
 
-<div id="chat-main" class:working={thinking}>
+<div id="chat-main" class:working={working}>
   <div id="messages" bind:this={scrollEl} onscroll={onScroll}>
     {#if brain.isCompressing(brain.session?.id)}
       <div class="compressing-banner" role="status" aria-live="polite">
@@ -180,13 +177,13 @@
         <span>compressing history…</span>
       </div>
     {/if}
-    <Transcript {dancer} working={thinking} onsub={(id) => void sub.open(id)} bind:thinkingBody />
+    <Transcript working={working} onsub={(id) => void sub.open(id)} bind:thinkingBody />
   </div>
 
   <PendingImages images={pendingImages} onremove={removeImage} />
   <!-- QueuedTurns now lives inside Composer's #composer-wrap so the todo
        badge floats above it instead of colliding. -->
-  <SubRunModal {sub} {dancer} idle={DANCE[0]} />
+  <SubRunModal {sub} />
   <Lightbox />
   <Composer bind:composerEl bind:pendingImages bind:busy onsend={scrollToBottom} />
 </div>

@@ -11,6 +11,7 @@ relative imports below are intra-package (``..``) because this module lives one
 level deeper than the old server did.
 """
 from __future__ import annotations
+import asyncio
 from functools import partial
 import inspect
 import json
@@ -25,8 +26,10 @@ from websockets.datastructures import Headers
 
 from .. import __version__
 from .activity import activity
+from ..features.backup import BackupManager
+from ..features.backup import rpc as backup_rpc
 from ..features.agent.loop import Agent
-from ..features.agent.provider import ProviderManager
+from ..features.agent.provider import ProviderManager, REASONING_EFFORTS
 from ..features.memory import mnemo
 from ..features.agent import rpc as agent_rpc
 from .governance import ApprovalManager
@@ -150,6 +153,12 @@ class App:
     def __init__(self, data_home: Path) -> None:
         data_home = ensure_data_home(data_home)
         self.data_home = data_home
+        # Lifecycle: the shell can ask the brain to stop (app.shutdown) or to
+        # stop-and-relaunch (app.restart). The RPC only records the *intent* —
+        # `serve` signals the event after the reply is on the wire, so the
+        # caller always gets its result instead of a severed socket.
+        self._stop_event = asyncio.Event()
+        self._stop_intent: str | None = None
         self.config = Config(data_home)
         self.sessions = SessionStore(data_home)
         self.providers = ProviderManager(data_home)
@@ -164,6 +173,7 @@ class App:
         self.flat_plugins = PluginBus(data_home, bus=self.bus)
         self.flat_plugins.load_dir(data_home / "plugins")
         self.orchestrator = Orchestrator(data_home)
+        self.backups = BackupManager(data_home)
         self.presets = PresetStore(data_home)
         _presets_mod.presets = self.presets
         self.approvals = ApprovalManager(self.config.get("approval_mode", "manual"))
@@ -193,7 +203,7 @@ class App:
         self.agent = Agent(
             self.sessions, data_home, self.providers, self.registry,
             self.approvals, self.memory, self.skills, self.flat_plugins,
-            self.config, hooks=self.bus,
+            self.config, hooks=self.bus, backups=self.backups,
         )
         self.agent.orchestrator = self.orchestrator
         self.agent.presets = self.presets
@@ -259,6 +269,26 @@ class App:
         # Core handlers are async; a plugin's `rpc` slot handler may be sync.
         return await result if inspect.isawaitable(result) else result
 
+    def request_stop(self, intent: str) -> None:
+        """Record a shell-requested shutdown. The RPC only sets the *intent*;
+        :meth:`flush_stop` — called once the reply is on the wire — is what
+        actually wakes ``serve``, so the caller never loses its result to a
+        socket that closed underneath it."""
+        self._stop_intent = intent
+
+    def flush_stop(self) -> None:
+        """Signal ``serve`` to tear down — a no-op unless a stop was asked."""
+        if self._stop_intent is not None:
+            self._stop_event.set()
+
+    @property
+    def stop_intent(self) -> str | None:
+        """``"shutdown"``, ``"restart"``, or ``None`` when nothing asked."""
+        return self._stop_intent
+
+    async def wait_for_stop(self) -> None:
+        await self._stop_event.wait()
+
     async def startup(self) -> None:
         # Plugins with ``async def activate`` register on the loop; wait for
         # them before we serve, so the first request sees a complete registry.
@@ -293,6 +323,7 @@ def _register_methods(app: App) -> None:
     ``ctx.register_rpc`` of a Core name is overridden rather than the reverse.
     """
     agent_rpc.register(app)
+    backup_rpc.register(app)
     memory_rpc.register(app)
     presets_rpc.register(app)
     plugins_rpc.register(app)
@@ -302,7 +333,14 @@ def _register_methods(app: App) -> None:
 
     @app.register("app.info")
     async def app_info(params: dict[str, Any]) -> dict[str, Any]:
-        return {"version": __version__, "data_home": str(app.data_home), "brain_pid": os.getpid()}
+        return {
+            "version": __version__,
+            "data_home": str(app.data_home),
+            "brain_pid": os.getpid(),
+            # The selectable reasoning-effort ladder, so a shell renders the
+            # same options the wire accepts instead of keeping its own copy.
+            "reasoning_efforts": list(REASONING_EFFORTS),
+        }
 
     @app.register("app.status")
     async def app_status(params: dict[str, Any]) -> dict[str, Any]:
@@ -330,6 +368,9 @@ def _register_methods(app: App) -> None:
             "max_parallel_subagents": max(1, int(raw.get("max_parallel_subagents", 100))),
             "retry_max": int(raw.get("retry_max", 10)),
             "retry_interval": int(raw.get("retry_interval", 3)),
+            "loop_guard": bool(raw.get("loop_guard", True)),
+            "loop_guard_reasoning": bool(raw.get("loop_guard_reasoning", True)),
+            "loop_guard_thresholds": app.config.loop_guard_thresholds(),
             "retain_ratio": float(raw.get("retain_ratio", 0.16)),
             "compaction_retries": int(raw.get("compaction_retries", 1)),
             "context_skill_budget": int(raw.get("context_skill_budget", 6000)),
@@ -437,6 +478,26 @@ def _register_methods(app: App) -> None:
             if n < 0:
                 raise RpcError(-32005, f"{key} must be >= 0")
             app.config.set(key, n)
+        elif key in ("loop_guard", "loop_guard_reasoning"):
+            app.config.set(key, bool(value))
+        elif key == "loop_guard_thresholds":
+            # Exactly two escalating trip points; ordering is normalized so a
+            # shell that reads them back always gets sorted.
+            if not isinstance(value, list) or len(value) != 2:
+                raise RpcError(-32005, "loop_guard_thresholds must be two numbers")
+            try:
+                a, b = int(value[0]), int(value[1])
+            except (TypeError, ValueError) as exc:
+                raise RpcError(-32005, f"invalid loop_guard_thresholds: {value!r}") from exc
+            if a > b:
+                a, b = b, a
+            if a < 2:
+                raise RpcError(-32005, "the first threshold must be at least 2 rounds")
+            if b > 50:
+                raise RpcError(-32005, "thresholds are capped at 50 rounds")
+            if a == b:
+                raise RpcError(-32005, "the escalation threshold must be larger than the first")
+            app.config.set(key, [a, b])
         elif key == "model_fallbacks":
             if not isinstance(value, list):
                 raise RpcError(-32005, "model_fallbacks must be an array of model ids")
@@ -519,6 +580,19 @@ def _register_methods(app: App) -> None:
             checks.append({"name": f"provider:{p.id}", "ok": ok, "detail": error or f"{len(models)} models"})
         return {"checks": checks}
 
+    @app.register("app.shutdown")
+    async def app_shutdown(params: dict[str, Any]) -> dict[str, Any]:
+        # Record intent only: `serve` tears down after this reply is flushed,
+        # so the shell sees {"ok": true} rather than a dropped socket.
+        app.request_stop("shutdown")
+        return {"ok": True, "action": "shutdown"}
+
+    @app.register("app.restart")
+    async def app_restart(params: dict[str, Any]) -> dict[str, Any]:
+        app.request_stop("restart")
+        return {"ok": True, "action": "restart"}
+
+
 
 
 
@@ -583,14 +657,70 @@ async def handle_message(app: App, ws: ServerConnection, raw: str | bytes) -> No
             )
 
     await ws.send(json.dumps(reply))
+    # A stop/restart RPC has now been answered in full — release `serve` to do
+    # the teardown. Doing it here (not inside dispatch) is what guarantees the
+    # reply above reached the shell before the socket closes.
+    app.flush_stop()
 
 
+# When the shell asks for a restart, the replacement process is racing the
+# old image for the WS port. A handful of short retries covers that window
+# (and a lingering TIME_WAIT) without slowing a normal start, which never
+# retries at all.
+_BIND_RETRIES = 20
+_BIND_RETRY_DELAY = 0.25
+
+# Largest single WS frame we accept. The shell reads an attached image into a
+# data URL under an 8 MiB guard (web/src/lib/attach.ts) and sends the whole
+# `session.send` payload in one frame (web/src/lib/rpc.ts); base64 inflates
+# that ~4/3 (~10.7 MiB) before the JSON envelope. The websockets default of
+# 1 MiB closed such a frame with 1009, so the send silently never got a reply.
+# 16 MiB covers one full-size attachment with headroom while staying bounded
+# (an unbounded limit would let a single frame exhaust memory).
+_MAX_WS_FRAME_BYTES = 16 * 1024 * 1024
+
+
+
+
+def _clear_pid_file(data_home: Path) -> None:
+    """Drop ``data_home/brain.pid`` on an intentional shutdown.
+
+    The supervisor (``xu --supervise``) relaunches the brain for as long as
+    that file still names the launch, so "the brain went away" and "someone
+    asked the brain to stop" have to be told apart: an `app.shutdown` exit
+    removing the file is what tells the supervisor to stay down. `_rewrite_
+    pid_file` above only ever writes into it, so it is safe to unlink here.
+    """
+    (data_home / "brain.pid").unlink(missing_ok=True)
+
+
+def _rewrite_pid_file(data_home: Path) -> None:
+    """Point ``data_home/brain.pid`` at this process after a restart.
+
+    The launcher (`xu.py`) owns that file on a normal start, so it is only
+    touched here when it already exists — a bare ``python -m xu_brain`` must
+    not start claiming the pid file out from under the launcher. On POSIX
+    ``os.execv`` keeps the pid, so this is a no-op rewrite; on Windows the
+    process image is swapped for a new pid and this keeps `xu status`/`xu stop`
+    pointing at the live brain.
+    """
+    pid_file = data_home / "brain.pid"
+    if pid_file.is_file():
+        pid_file.write_text(f"{os.getpid()}\n")
 async def serve(
+
+
     host: str = "127.0.0.1",
     port: int = 9876,
     data_home: Path | None = None,
     web_dir: str | Path | None = None,
-) -> None:
+) -> str | None:
+    """Run the brain until a shell-requested stop (or the process is killed).
+
+    Returns the stop intent — ``"restart"`` or ``"shutdown"`` — or ``None``
+    when the server ended some other way (Ctrl-C, bind failure). The entry
+    point re-execs on ``"restart"``.
+    """
     app = build_app(data_home)
     await app.startup()
     activity.record("info", "brain", f"brain started {__version__}", f"data={app.data_home}")
@@ -626,14 +756,38 @@ async def serve(
             notify.detach(ws)
 
     # Bind the WS port FIRST — it is the contract. Only announce readiness
-    # after the socket is actually bound, so launchers/logs never lie.
-    try:
-        server = await ws_serve(handler, host, port, process_request=_reject_cross_origin)
-    except OSError as exc:
-        activity.record("error", "brain", "brain failed to start", f"{host}:{port} already in use ({exc})")
-        print(f"[xu-brain] FAILED to start: {host}:{port} already in use ({exc})", flush=True)
+    # after the socket is actually bound, so launchers/logs never lie. A
+    # restarted process retries: its predecessor may still be releasing the
+    # port (the launcher passes XU_RESTARTED through os.execv).
+    restarted = os.environ.get("XU_RESTARTED") == "1"
+    attempts = _BIND_RETRIES if restarted else 1
+    server = None
+    bind_error: OSError | None = None
+    for attempt in range(attempts):
+        try:
+            server = await ws_serve(
+                handler, host, port,
+                process_request=_reject_cross_origin,
+                max_size=_MAX_WS_FRAME_BYTES,
+            )
+            break
+        except OSError as exc:
+            bind_error = exc
+            if attempt + 1 < attempts:
+                await asyncio.sleep(_BIND_RETRY_DELAY)
+    if server is None:
+        activity.record(
+            "error", "brain", "brain failed to start",
+            f"{host}:{port} already in use ({bind_error})",
+        )
+        print(
+            f"[xu-brain] FAILED to start: {host}:{port} already in use ({bind_error})",
+            flush=True,
+        )
         print("[xu-brain] is another xu-brain already running? try `xu status` / `xu restart`", flush=True)
-        return
+        return None
+    if restarted:
+        _rewrite_pid_file(app.data_home)
     print(f"[xu-brain] {__version__} data={app.data_home} listening ws://{host}:{port}", flush=True)
 
     if web_dir:
@@ -651,9 +805,24 @@ async def serve(
         if not served:
             print(f"[xu-brain] webui skipped: ports {base}-{base + 2} busy (WS-only mode)", flush=True)
 
+    # An app.shutdown/app.restart RPC sets the stop event *after* its reply is
+    # on the wire (see handle_message). This watcher turns that into a server
+    # close, which unwinds serve_forever and lands us in the teardown below.
+    async def _watch_stop() -> None:
+        await app.wait_for_stop()
+        server.close()
+
+    stop_watcher = asyncio.ensure_future(_watch_stop())
     try:
         async with server:
             await server.serve_forever()
-    finally:
+    except asyncio.CancelledError:
+        pass
+        stop_watcher.cancel()
         activity.record("info", "brain", "brain stopping")
         await app.shutdown()
+
+    intent = app.stop_intent
+    if intent == "shutdown":
+        _clear_pid_file(app.data_home)
+    return intent

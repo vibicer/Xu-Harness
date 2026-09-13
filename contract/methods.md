@@ -31,6 +31,8 @@ on `ws://127.0.0.1:9876` (override `XU_BRAIN_URL`), JSON-RPC 2.0 message framing
 | `app.info` | — | `{ version, data_home, brain_pid }` | handshake |
 | `app.status` | — | `{ brain: "ok", version, providers: [...], rss_mb }` | status squares |
 | `app.doctor` | — | `{ checks: [{ name, ok, detail }] }` | diagnostics: data_home/providers |
+| `app.shutdown` | — | `{ ok, action: "shutdown" }` | stop the brain daemon (About panel power control). The reply is flushed before teardown, so the caller sees the result rather than a dropped socket |
+| `app.restart` | — | `{ ok, action: "restart" }` | stop and relaunch the brain in place (About panel power control); the daemon re-execs itself and keeps its pid on POSIX |
 | `logs.list` | `{ limit?, source?, level? }` | `{ logs: [{ ts, level, source, message, detail? }] }` | activity ring buffer, newest first; capped at 1000 entries in the brain |
 | `provider.list` | — | `[{ id, type, base_url, models, key_set }]` | key never returned |
 | `provider.upsert` | `{ id?, type, base_url, api_key?, models? }` | `{ id }` | keychain in shell/Rust |
@@ -50,8 +52,9 @@ on `ws://127.0.0.1:9876` (override `XU_BRAIN_URL`), JSON-RPC 2.0 message framing
 | `session.queue.steer` | `{ id, queued_id }` | `{ steered }` | interrupt the running turn and run a queued message now: promotes it to the front of the queue, then stops the turn so its chaining tail starts it as a fresh turn. `steered: false` when the id was already spliced into the live turn |
 | `workspace.set_cwd` | `{ session_id, cwd }` | `{ cwd }` | CWD row control |
 | `fs.list` | `{ path? }` | `{ path, dirs }` | child directory *names* for the CWD picker. Not confined to the session cwd — it is how the user reaches a new project — and never returns file contents |
-| `state.get` | `{ session_id }` | `{ model, rules, context, cwd, preset }` | agent state panel; rules are per-session; `preset` = active orchestration tree or null |
+| `state.get` | `{ session_id }` | `{ model, reasoning_effort, rules, context, cwd, preset }` | agent state panel; rules are per-session; `preset` = active orchestration tree or null |
 | `state.set_model` | `{ session_id, model }` | `{ model }` | |
+| `state.set_effort` | `{ session_id, effort? }` | `{ reasoning_effort }` | per-session reasoning effort sent upstream as `reasoning_effort`; `null` sends no field at all, leaving the provider/relay default in force; `-32602` for a value outside the `app.info` ladder |
 | `state.set_persona` | `{ session_id, persona? }` | `{ persona }` | per-session persona override (`null` = fall back to the global default) |
 | `state.set_rules` | `{ session_id, rules }` | `{ rules }` | replace the ordered per-session rules list |
 | `session.set_preset` | `{ session_id, preset_id? }` | `{ preset_id }` | bind a session to an orchestration preset (`null` = none) |
@@ -81,11 +84,15 @@ on `ws://127.0.0.1:9876` (override `XU_BRAIN_URL`), JSON-RPC 2.0 message framing
 | `tool.set_enabled` | `{ toolset, enabled, session_id? }` | `{}` | with `session_id` a **per-session override** for the toolset; `-32002` unknown session |
 | `tool.set_dropin_enabled` | `{ name, enabled, session_id? }` | `{}` | toggle one user-authored drop-in tool; with `session_id` a **per-session override**; `-32002` if the name is not an active drop-in (or unknown session)
 | `todo.get` | `{ session_id }` | `{ phases: [...] }` | current plan for the session; `{ phases: [] }` when the agent has not written one |
-| `config.get` | — | `{ context_length, compress_threshold, approval_mode, approval_modes, job_timeout, vision_model, model_fallbacks }` | `approval_modes` = custom modes `{ name: { auto: [tool pat], prompt: [tool pat] } }`; `model_fallbacks` = global ordered backup models |
-| `config.set` | `{ key, value }` | `{}` | `key: "approval_modes"` replaces the custom-mode map; `key: "approval_mode"` accepts `manual`, `yolo`, or a custom mode name; `key: "model_fallbacks"` takes an ordered array of model ids (deduped, blanks dropped) |
+| `config.get` | — | `{ context_length, compress_threshold, approval_mode, approval_modes, job_timeout, vision_model, model_fallbacks }` | `approval_modes` = custom modes `{ name: { auto: [tool pat], prompt: [tool pat] } }`; `model_fallbacks` = global ordered backup models; `loop_guard` / `loop_guard_reasoning` / `loop_guard_thresholds` = the repeat-warning feature |
+| `config.set` | `{ key, value }` | `{}` | `key: "approval_modes"` replaces the custom-mode map; `key: "approval_mode"` accepts `manual`, `yolo`, or a custom mode name; `key: "model_fallbacks"` takes an ordered array of model ids (deduped, blanks dropped); `key: "loop_guard"` / `"loop_guard_reasoning"` booleans, `key: "loop_guard_thresholds"` two escalating round counts (`2 ≤ first < last ≤ 50`) |
 | `approval.resolve` | `{ request_id, approved, remember? }` | `{ resolved }` | settle inline approval card; `remember: true` with `approved: true` = stop prompting that tool for the rest of the session (RISKY only — the ALWAYS-gate still re-prompts) |
 | `reply.resolve` | `{ request_id, answer }` | `{ resolved }` | settle `ask` clarification |
 | `git.detail` | `{ session_id? }` | `{ repo, cwd, branch?, files: [{ state, path }], commits: [{ sha, subject, ts, author }] }` | git panel. Best-effort: a non-repo or missing `git` yields `{ repo: false }`. Files capped at 50, commits at 10 |
+| `fs.undo` | `{ session_id, steps?, path? }` | `{ ok, restored: [...], deleted: [...], turns: [...], message }` | roll back file mutations made by tools (write/edit/ast_edit) turn-by-turn |
+| `fs.redo` | `{ session_id, steps? }` | `{ ok, restored: [...], deleted: [...], turns: [...], message }` | re-apply rolled back file mutations |
+| `fs.history` | `{ session_id, limit? }` | `{ history: [{ id, turn_id, path, rel_path, existed, tool, created_at, status }] }` | inspection of file mutations in this session |
+| `fs.diff` | `{ session_id, turn_id?, backup_id? }` | `{ diff }` | unified diff of file mutations in a turn or snapshot |
 | `subagent.send` | `{ prompt, session_id? }` | `{ id }` | spawn a managed background subagent |
 | `subagent.list` | — | `{ subagents: [...] }` | managed subagents + status |
 | `subagent.message` | `{ id, message }` | `{ accepted }` | follow-up prompt to a subagent |
@@ -129,8 +136,9 @@ belongs in a UI payload.
 | `turn.started` | `{ turn_id, session_id, model }` | thinking row begins |
 | `turn.delta` | `{ turn_id, session_id, delta }` | streamed text chunk |
 | `turn.reasoning` | `{ turn_id, session_id, delta }` | streamed thinking |
-| `turn.tool` | `{ turn_id, session_id, tool, args, status, elapsed?, output?, image?, image_alt? }` | tool chip update (`image` = data URL from `show_image`, rendered under the chip) |
+| `turn.tool` | `{ turn_id, session_id, tool, args, status, elapsed?, output?, note?, cwd?, image?, image_alt? }` | tool chip update (`note` = concise action-specific AI text; `cwd` = execution-start directory; `image` = data URL from `show_image`, rendered under the chip) |
 | `turn.notice` | `{ turn_id, session_id, text, detail? }` | transient status (e.g. retry) |
+| `turn.guard` | `{ turn_id, session_id, text, count }` | loop guard fired: the turn repeated the same tools or the same reasoning up to a trip point (`count`), and a model-visible reminder changed its approach — the chip stays in the timeline |
 | `turn.queue` | `{ turn_id, session_id, queued_id, text }` | user message queued above the composer mid-turn (rendered as a "queued" bubble) |
 | `turn.dequeue` | `{ turn_id, session_id, messages: [{ queued_id, text, images? }] }` | queued messages spliced into the live turn at a tool round (shell moves them from the queued tray into the timeline) |
 | `queue.cancelled` | `{ session_id, queued_id }` | a queued message was dropped before it could be consumed (e.g. cancelled in another tab) |
@@ -169,3 +177,22 @@ of them move together.
 `brain/tests/test_contract_doc.py` fails when a registered method has no row
 here, so the drift cannot come back silently. Run it with
 `python -m pytest tests/test_contract_doc.py`.
+
+### Tool-log display metadata
+
+Model-facing tool schemas offer `_xu_note` (reserved by Xu, required for Bash and
+optional for other tools): a concise,
+plain-language description of that specific action, not a generic tool description.
+The registry normalizes it to one line, caps it at 160 characters, and emits it as
+`note`. It is stripped before approval, hooks, tool execution, loop-guard comparison,
+and provider tool-call history. It remains on live and persisted display steps.
+
+`cwd` records the directory at the **start** of the call. Bash uses its persistent
+shell directory, unless the user changed the session directory. A `cd` inside a
+compound command does not retroactively change the recorded start directory.
+File/search tools show their explicit target where available; remote tools do not
+show an unrelated local directory. Missing notes in older logs retain literal
+command/target fallbacks rather than invented action descriptions. The compact row
+shows the tool, location, action, status/duration, and caret. Expanded rows show
+only tool output, subject to the existing backend size caps; there is no separate
+Target / Execution cwd / Action / Arguments metadata block.

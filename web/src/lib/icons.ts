@@ -46,12 +46,16 @@ import Palette from "@lucide/svelte/icons/palette";
 import Paperclip from "@lucide/svelte/icons/paperclip";
 import Plug from "@lucide/svelte/icons/plug";
 import Plus from "@lucide/svelte/icons/plus";
+import Power from "@lucide/svelte/icons/power";
 import Puzzle from "@lucide/svelte/icons/puzzle";
 import RefreshCw from "@lucide/svelte/icons/refresh-cw";
 import Rocket from "@lucide/svelte/icons/rocket";
 import ScrollText from "@lucide/svelte/icons/scroll-text";
+import Search from "@lucide/svelte/icons/search";
 import Send from "@lucide/svelte/icons/send";
 import Settings from "@lucide/svelte/icons/settings";
+import Square from "@lucide/svelte/icons/square";
+import SquarePen from "@lucide/svelte/icons/square-pen";
 import TriangleAlert from "@lucide/svelte/icons/triangle-alert";
 import Wrench from "@lucide/svelte/icons/wrench";
 import X from "@lucide/svelte/icons/x";
@@ -87,16 +91,20 @@ export const ICONS = {
   palette: Palette,
   paperclip: Paperclip,
   plug: Plug,
-  plus: Plus,
-  puzzle: Puzzle,
-  "refresh-cw": RefreshCw,
-  rocket: Rocket,
-  "scroll-text": ScrollText,
-  send: Send,
-  settings: Settings,
-  "triangle-alert": TriangleAlert,
-  wrench: Wrench,
-  x: X,
+plus: Plus,
+power: Power,
+puzzle: Puzzle,
+"refresh-cw": RefreshCw,
+rocket: Rocket,
+"scroll-text": ScrollText,
+search: Search,
+send: Send,
+settings: Settings,
+square: Square,
+"square-pen": SquarePen,
+"triangle-alert": TriangleAlert,
+wrench: Wrench,
+x: X,
 } satisfies Record<string, Component<LucideProps>>;
 
 export type IconName = keyof typeof ICONS;

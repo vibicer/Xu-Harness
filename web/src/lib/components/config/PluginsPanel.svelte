@@ -5,9 +5,34 @@
   let openPlugins = $state<Record<string, boolean>>({});
   function togglePlugin(name: string): void { openPlugins = { ...openPlugins, [name]: !openPlugins[name] }; }
   let pluginReloading = $state(false);
+  let pluginErr = $state("");
+  /** Per-plugin nonce bumped when a write fails, so the one-way-bound control
+   *  is rebuilt and re-applies the store's value. Svelte only rewrites a
+   *  binding when its expression changes, so a rejected write would otherwise
+   *  leave the DOM showing the click the brain refused. */
+  let syncTick = $state<Record<string, number>>({});
+  const errText = (e: unknown): string => (e instanceof Error ? e.message : String(e));
   async function reloadPlugins(): Promise<void> {
     pluginReloading = true;
-    try { await brain.reloadPlugins(); } finally { pluginReloading = false; }
+    pluginErr = "";
+    try {
+      await brain.reloadPlugins();
+    } catch (e) {
+      pluginErr = `reload failed: ${errText(e)}`;
+    } finally {
+      pluginReloading = false;
+    }
+  }
+  /** Run a plugin write; a rejection is surfaced and re-syncs the control it
+   *  came from, instead of leaving the switch lying about the brain's state. */
+  async function writePlugin(name: string, what: string, run: () => Promise<void>): Promise<void> {
+    pluginErr = "";
+    try {
+      await run();
+    } catch (e) {
+      pluginErr = `${what} failed: ${errText(e)}`;
+      syncTick = { ...syncTick, [name]: (syncTick[name] ?? 0) + 1 };
+    }
   }
 </script>
 
@@ -21,10 +46,17 @@
         <Icon name="refresh-cw" size={12} /> Reload
       </button>
     </div>
+    {#if pluginErr}
+      <div class="cfg-bar err">
+        <span class="st">{pluginErr}</span>
+        <span class="sp"></span>
+        <button type="button" class="k-btn sm" onclick={() => (pluginErr = "")}>DISMISS</button>
+      </div>
+    {/if}
     {#if brain.plugins.length === 0}
       <div class="k-empty">No plugins installed — drop a package into ~/.xu/plugins/ and hit Reload.</div>
     {:else}
-      {#each brain.plugins as a (a.name)}
+      {#each brain.plugins as a (`${a.name}:${syncTick[a.name] ?? 0}`)}
         {@const detail = (a.settings?.length ?? 0) + (a.themes?.length ?? 0)}
         <div class="cfg-row">
           <!-- The name is the fold trigger when there is anything to fold, and
@@ -69,7 +101,7 @@
           </svelte:element>
           <div class="ctrl">
             <label class="toggle" title={a.enabled ? "disable (takes effect on next reload/boot)" : "enable"}>
-              <input type="checkbox" checked={a.enabled} onchange={() => void brain.setPluginEnabled(a.name, !a.enabled)} />
+              <input type="checkbox" checked={a.enabled} onchange={() => void writePlugin(a.name, a.enabled ? "disable" : "enable", () => brain.setPluginEnabled(a.name, !a.enabled))} />
               <span class="track"></span>
               <span class="thumb"></span>
             </label>
@@ -88,7 +120,7 @@
                 {#if s.type === "boolean"}
                   <label class="toggle" title={s.key}>
                     <input type="checkbox" checked={s.value === true}
-                           onchange={(e) => void brain.setPluginSetting(a.name, s.key, e.currentTarget.checked)} />
+                           onchange={(e) => void writePlugin(a.name, `set ${s.key}`, () => brain.setPluginSetting(a.name, s.key, e.currentTarget.checked))} />
                     <span class="track"></span>
                     <span class="thumb"></span>
                   </label>
@@ -97,15 +129,15 @@
                        config file (and reject a half-typed "-") on every key. -->
                   <input type="number" value={String(s.value ?? "")}
                          step={s.type === "integer" ? 1 : "any"}
-                         onchange={(e) => void brain.setPluginSetting(a.name, s.key, e.currentTarget.value)} />
+                         onchange={(e) => void writePlugin(a.name, `set ${s.key}`, () => brain.setPluginSetting(a.name, s.key, e.currentTarget.value))} />
                 {:else if s.type === "list"}
                   <textarea rows="3" title="one per line"
                             value={Array.isArray(s.value) ? (s.value as unknown[]).join("\n") : String(s.value ?? "")}
-                            onchange={(e) => void brain.setPluginSetting(a.name, s.key, e.currentTarget.value)}
+                            onchange={(e) => void writePlugin(a.name, `set ${s.key}`, () => brain.setPluginSetting(a.name, s.key, e.currentTarget.value))}
                   ></textarea>
                 {:else}
                   <input type="text" value={String(s.value ?? "")}
-                         onchange={(e) => void brain.setPluginSetting(a.name, s.key, e.currentTarget.value)} />
+                         onchange={(e) => void writePlugin(a.name, `set ${s.key}`, () => brain.setPluginSetting(a.name, s.key, e.currentTarget.value))} />
                 {/if}
               </div>
             </div>

@@ -287,11 +287,22 @@ function turnSteps(turn: Turn): number {
 export function mountBatch(all: Turn[], end: number, maxTurns: number, stepBudget: number): number {
   let steps = 0;
   let count = 0;
+  let content = false;
   while (count < end && count < maxTurns) {
-    const s = turnSteps(all[end - 1 - count]);
-    if (count > 0 && steps + s > stepBudget) break;
+    const turn = all[end - 1 - count];
+    const s = turnSteps(turn);
+    // Never close the batch on markers alone. A compaction divider is a turn
+    // with no assistant, so `turnSteps` is 0 for it: the `count > 0` guard was
+    // satisfied by the divider, the next (step-heavy) turn then broke the
+    // batch, and the window armed to the divider BY ITSELF. Opening a
+    // compressed session then showed "context compacted" and nothing else —
+    // and because one row doesn't overflow, no scroll followed to load the
+    // rest, so the transcript looked deleted. Requiring one content-bearing
+    // turn keeps the batch worth showing.
+    if (count > 0 && content && steps + s > stepBudget) break;
     steps += s;
     count++;
+    if (turn.user || turn.assistant) content = true;
   }
   return count;
 }

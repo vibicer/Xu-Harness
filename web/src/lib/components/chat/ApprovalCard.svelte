@@ -16,9 +16,28 @@
   function setAskInput(value: string): void {
     askInput = value;
   }
+  /** One answer per card. A click locks every control until the RPC settles,
+   *  so a fast Approve→Deny cannot send two `approval.resolve` calls for one
+   *  request_id; `card.resolved` (pushed by the brain) keeps the card locked
+   *  once it is answered. A failed call unlocks so the user can retry. */
+  let pending = $state(false);
+  let failed = $state("");
+  const locked = $derived(pending || card.resolved !== null);
+  async function answer(run: () => Promise<void>): Promise<void> {
+    if (locked) return;
+    pending = true;
+    failed = "";
+    try {
+      await run();
+    } catch (e) {
+      failed = e instanceof Error ? e.message : String(e);
+    } finally {
+      pending = false;
+    }
+  }
   function submitAsk(): void {
-    const answer = askInput.trim();
-    if (answer) void brain.replyAsk(card.request_id, answer);
+    const text = askInput.trim();
+    if (text) void answer(() => brain.replyAsk(card.request_id, text));
   }
 
   const reason = $derived(approvalReason(card.reason));
@@ -66,7 +85,7 @@
     <div class="ask-options">
       {#if opts.length}
         {#each opts as opt, i (i)}
-          <button type="button" class="ask-opt" onclick={() => void brain.replyAsk(card.request_id, opt)}>
+          <button type="button" class="ask-opt" disabled={locked} onclick={() => void answer(() => brain.replyAsk(card.request_id, opt))}>
             <span class="ask-idx">{i + 1}</span>
             <span class="ask-val">{opt}</span>
           </button>
@@ -78,23 +97,28 @@
           type="text"
           placeholder="Type a reply…"
           value={askInput}
+          disabled={locked}
           oninput={(e) => setAskInput(e.currentTarget.value)}
           onkeydown={(e) => { if (e.key === "Enter") { e.preventDefault(); submitAsk(); } }}
         />
-        <button type="button" class="btn primary" onclick={() => submitAsk()}>Send</button>
+        <button type="button" class="btn primary" disabled={locked} onclick={() => submitAsk()}>Send</button>
       </div>
     </div>
   {:else}
     <div class="btns">
-      <button class="btn primary" onclick={() => void brain.resolveApproval(card.request_id, true)}>Approve</button>
+      <button class="btn primary" disabled={locked} onclick={() => void answer(() => brain.resolveApproval(card.request_id, true))}>Approve</button>
       {#if canRemember}
         <button
           class="btn"
+          disabled={locked}
           title={`approve, and stop asking for "${card.tool}" for the rest of this session`}
-          onclick={() => void brain.resolveApproval(card.request_id, true, true)}
+          onclick={() => void answer(() => brain.resolveApproval(card.request_id, true, true))}
         >Always</button>
       {/if}
-      <button class="btn danger" onclick={() => void brain.resolveApproval(card.request_id, false)}>Deny</button>
+      <button class="btn danger" disabled={locked} onclick={() => void answer(() => brain.resolveApproval(card.request_id, false))}>Deny</button>
     </div>
+  {/if}
+  {#if failed}
+    <div style="font-size:13px;color:var(--danger);margin-top:10px">answer failed: {failed}</div>
   {/if}
 </div>

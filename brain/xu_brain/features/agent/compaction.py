@@ -74,6 +74,14 @@ class CompactionMixin:
         # history. No-op on the auto path, whose rows are already dereferenced.
         for e in entries:
             e["content"] = _dereference_images(e["content"], getattr(self, "data_home", None), session_id)
+        # Capture prior checkpoints BEFORE the pruning below. A checkpoint is
+        # the condensed history itself: `_prune_content` would cut out the
+        # middle of a large one — and the middle is where "## Next Step" /
+        # "## Critical Context" sit, i.e. exactly what the merge must keep. It
+        # is already bounded by the token cap that produced it, so it goes to
+        # the summarizer verbatim.
+        prior = [e["content"] for e in entries
+                 if self._is_checkpoint(e) and isinstance(e.get("content"), str)]
         # Model-free pruning of oversized tool results BEFORE range selection,
         # so a bloated result can relieve pressure without a summary round.
         pruned = [_prune_content(e["content"]) for e in entries]
@@ -166,9 +174,21 @@ class CompactionMixin:
         ]
         if not shadowed:
             return {"ok": False, "error": "not enough conversation to summarize", "before": before, "after": before, "dropped": 0}
+        # A prior checkpoint is a `system` row, so it is excluded from
+        # `shadowed` above AND dropped from the retained tail by
+        # `_persisted_msgs` (only one checkpoint may survive) / the
+        # `_maybe_compress` tail filter. Without feeding it back, everything it
+        # captured is lost on every cycle and the instruction's merge clause
+        # ("If the conversation already contains a <compacted-summary> block")
+        # can never fire — its precondition is never in the prompt. Insert the
+        # prior checkpoint(s) (captured above) immediately before the
+        # instruction so the clause becomes reachable. This rides on
+        # `summary_msgs` only: the checkpoint stays out of `messages`/`recent`,
+        # so it never becomes live model context (summarizer-only input).
         summary_msgs = [
             {"role": "system", "content": system},
             *shadowed,
+            *([{"role": "system", "content": "\n\n".join(prior)}] if prior else []),
             {"role": "user", "content": _COMPACTION_INSTRUCTION},
         ]
 

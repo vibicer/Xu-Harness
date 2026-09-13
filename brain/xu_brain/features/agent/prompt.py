@@ -5,6 +5,7 @@ A mixin aspect of :class:`~xu_brain.features.agent.loop.Agent`.
 from __future__ import annotations
 
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 
 from ..session import Session
@@ -122,6 +123,20 @@ class PromptMixin:
         # the bash tool's spawn dir. Hard-injected (budget-exempt) because a
         # model that guesses this reads and writes the wrong tree.
         hard: list[str] = [f"# cwd (session)\n{session.cwd}"]
+        # Auto-inject AGENTS.md / CLAUDE.md project map at the working root if present.
+        try:
+            cwd_p = Path(session.cwd)
+            for map_file in ("AGENTS.md", "CLAUDE.md"):
+                p = cwd_p / map_file
+                if p.is_file():
+                    text = p.read_text("utf-8", errors="replace").strip()
+                    if text:
+                        # Cap at 4000 chars to keep system prompt lean
+                        snippet = text[:4000] + ("\n…[truncated]" if len(text) > 4000 else "")
+                        hard.append(f"# {map_file} (project map)\n{snippet}")
+                        break
+        except Exception:  # noqa: BLE001
+            pass
         for sid in sorted(enabled):
             # Session-only enables read the body without marking the skill
             # LOADED globally — that would leak it into other sessions' prompts.

@@ -60,6 +60,13 @@
       const key = `${p.name}/${p.ui.module}`;
       if (loaded.has(key)) continue;
       loaded.add(key);
+      // A fresh attempt retires the earlier failure: leaving it up would keep
+      // an error chip the retry is about to disprove.
+      if (failed[p.name]) {
+        const next = { ...failed };
+        delete next[p.name];
+        failed = next;
+      }
       import(/* @vite-ignore */ `/plugins/${p.name}/${p.ui.module}`)
         .then(() => {
           if (customElements.get(p.ui.element)) {
@@ -69,6 +76,10 @@
           }
         })
         .catch((e: unknown) => {
+          // Drop the "already imported" marker so a retry actually retries: a
+          // 404 or a throwing module would otherwise stay skipped for the rest
+          // of the session, and Reload is the documented recovery path.
+          loaded.delete(key);
           failed = { ...failed, [p.name]: e instanceof Error ? e.message : String(e) };
         });
     }

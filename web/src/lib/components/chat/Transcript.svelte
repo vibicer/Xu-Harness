@@ -22,10 +22,10 @@
     backfillMode,
   } from "./messages";
   import type { BackfillMode } from "./messages";
+  import ThinkClock from "./ThinkClock.svelte";
+  import { dur } from "../../format";
 
   let {
-    /** live dancer glyph cycled by the shell while a turn streams */
-    dancer,
     /** streaming bubble is "hot" (shell LED state) */
     working,
     /** open a sub-agent run modal (behaviour lives in the shell's subrun view) */
@@ -33,17 +33,19 @@
     /** the live reasoning scroll box, bound up so the shell can follow the stream */
     thinkingBody = $bindable<HTMLDivElement | null>(null),
   }: {
-    dancer: string;
     working: boolean;
     onsub: (id: string) => void;
     thinkingBody: HTMLDivElement | null;
   } = $props();
 
-  const idle = "╰(°▽°)╯"; // static glyph for finished reasoning steps
-
   // live reasoning body ref: keep its inner scroll following the stream
   // collapsed draft timeline; a reasoning step is "live" only while it is the tail
   const draftSteps = $derived(brain.draft ? collapseDelegates(brain.draft.steps) : []);
+  /* Nothing real has landed in the live bubble yet — no thought, no tool, no
+     text. A layout that shows a whole-turn status *line* (simple's "Processing")
+     uses this to retire the line once there is something to read; a layout that
+     shows it as a border (the default LED ring) ignores it and keeps the ring. */
+  const pending = $derived(draftSteps.length === 0 && !brain.draft?.notice);
 
   // ---- tail-first mount window ----
   // A big session carries thousands of tool steps; mounting every ToolChip in
@@ -94,6 +96,13 @@
     backfill = null;
     mountCount = armMount(allTurns, 2 * MOUNT_CHUNK, 2 * STEP_BUDGET);
     tailLocked = mountCount >= len;
+    // …and a partial window is therefore already AT that edge, so say so
+    // rather than leaving it to the sample the pin's scroll would supply.
+    // `backfill === null` means "reader is mid-window, mount nothing", so a
+    // window that never scrolls — a transcript shorter than the viewport —
+    // could never start its backfill chain and would stay partial forever,
+    // showing only whatever little it happened to arm with.
+    if (!tailLocked) backfill = "edge";
   });
 
   $effect(() => {
@@ -175,8 +184,13 @@
 
   $effect(() => {
     void brain.session?.id; // restart the chain per session
-    const len = allTurns.length; // start once the history lands
-    if (!backfill || len <= MOUNT_CHUNK) return; // else: nothing wants older history
+    // Start once the history lands AND the window wants older turns. The old
+    // `len <= MOUNT_CHUNK` test was a turn-count proxy for "everything is
+    // mounted", which a step-heavy history breaks: 9 turns of 300 steps each
+    // arm to ONE turn, and the chain then never ran — 8 turns unreachable with
+    // nothing on screen to scroll. `step` below already stops when the window
+    // reaches the end, so the only thing to test here is intent.
+    if (!backfill) return;
     let alive = true;
     const schedule = (fn: () => void): void => {
       if ("requestIdleCallback" in window) requestIdleCallback(fn);
@@ -317,7 +331,7 @@
         <div class="box">
           {#if contentImages(t.user.content).length}
             <div class="att-thumbs">
-              {#each contentImages(t.user.content) as img (img)}
+              {#each contentImages(t.user.content) as img, i (i)}
                 <button class="att-thumb-btn" title="zoom image" onclick={() => openImage(img, "attachment")}>
                   <img class="att-thumb" src={img} alt="attachment" loading="lazy" />
                 </button>
@@ -353,20 +367,22 @@
           </button>
           {#if hasReasoningBlock}
             <div
-              class="think ok"
+              class="lg done"
               role="button"
               tabindex="0"
               aria-expanded={!!histOpen[origIdx]}
               onclick={() => toggleHist(origIdx)}
               onkeydown={(e) => histKey(e, origIdx)}
             >
-              <div class="tk-head">
-                <span class="tk-icon"><Icon name="check" size={12} /></span>
-                <span class="tk-tool"><span class="dancer">{idle}</span> thinking</span>
-                <span class="tk-state"><Icon name={histOpen[origIdx] ? "chevron-down" : "chevron-right"} size={11} /> {histOpen[origIdx] ? "hide" : "show"}</span>
+              <div class="lg-row">
+                <span class="lg-led" aria-hidden="true"></span>
+                <span>THOUGHT</span>
+                <span class="lg-tail">
+                  <span class="lg-caret" aria-hidden="true"><Icon name={histOpen[origIdx] ? "chevron-down" : "chevron-right"} size={12} /></span>
+                </span>
               </div>
               {#if histOpen[origIdx]}
-                <div class="tk-body">{a.reasoning}</div>
+                <div class="lg-body">{a.reasoning}</div>
               {/if}
             </div>
           {/if}
@@ -377,21 +393,29 @@
               {:else if step.kind === "reasoning"}
                 {@const rk = `${origIdx}:${j}`}
                 <div
-                  class="think ok"
+                  class="lg done"
                   role="button"
                   tabindex="0"
                   aria-expanded={!!histStepOpen[rk]}
                   onclick={() => toggleStepReasoning(rk)}
                   onkeydown={(e) => stepReasoningKey(e, rk)}
                 >
-                  <div class="tk-head">
-                    <span class="tk-icon"><Icon name="check" size={12} /></span>
-                    <span class="tk-tool"><span class="dancer">{idle}</span> thinking</span>
-                    <span class="tk-state"><Icon name={histStepOpen[rk] ? "chevron-down" : "chevron-right"} size={11} /> {histStepOpen[rk] ? "hide" : "show"}</span>
+                  <div class="lg-row">
+                    <span class="lg-led" aria-hidden="true"></span>
+                    <span>THOUGHT</span>
+                    <span class="lg-tail">
+                      {#if step.elapsed != null}<span class="lg-meta">{dur(step.elapsed)}</span>{/if}
+                      <span class="lg-caret" aria-hidden="true"><Icon name={histStepOpen[rk] ? "chevron-down" : "chevron-right"} size={12} /></span>
+                    </span>
                   </div>
                   {#if histStepOpen[rk]}
-                    <div class="tk-body">{step.text}</div>
+                    <div class="lg-body">{step.text}</div>
                   {/if}
+                </div>
+              {:else if step.kind === "guard"}
+                <div class="guard-note" class:hot={(step.tier ?? 1) > 1}>
+                  <span class="gn-flag">loop guard</span>
+                  <span class="gn-text">{step.text}</span>
                 </div>
               {:else}
                 {#each segments(step.text ?? "") as seg, k (k)}
@@ -429,7 +453,7 @@
   {/each}
   {#if brain.draft}
     <div class="msg assistant" class:working={working}>
-      <div class="box">
+      <div class="box" class:pending>
         <button
           class="copy"
           class:done={copied === -1}
@@ -442,31 +466,52 @@
         {#if brain.draft.notice}
           <div class="turn-notice">{brain.draft.notice}</div>
         {/if}
-        {#if brain.draft.steps.length === 0 && !brain.draft.reasoning && !brain.draft.notice}
+        {#if pending}
           <div class="text stream-idle">waiting for response…</div>
         {/if}
         {#each draftSteps as step, i (i)}
+          {@const live = i === draftSteps.length - 1}
           {#if step.kind === "tool"}
             <ToolChip {step} {onsub} />
           {:else if step.kind === "reasoning"}
-            {@const live = i === draftSteps.length - 1}
-            <div class="think {live ? 'run' : 'ok'}">
-              <div class="tk-head">
-                <span class="tk-tool"><span class="dancer">{live ? dancer : idle}</span> thinking</span>
+            <div class="lg" class:live>
+              <div class="lg-row">
+                <span class="lg-led" aria-hidden="true"></span>
+                <span>{live ? "THINKING" : "THOUGHT"}</span>
+                <ThinkClock startMs={live ? step.t0 ?? brain.draft?.startedAt ?? Date.now() : undefined} />
               </div>
-              <div class="tk-body" bind:this={thinkingBody}>{step.text}</div>
+              <div class="lg-rail" aria-hidden="true"><i></i></div>
+              <div class="lg-body" bind:this={thinkingBody}>{step.text}</div>
+            </div>
+          {:else if step.kind === "guard"}
+            <div class="guard-note" class:hot={(step.tier ?? 1) > 1}>
+              <span class="gn-flag">loop guard</span>
+              <span class="gn-text">{step.text}</span>
             </div>
           {:else}
-            {#each segments(step.text ?? "") as seg, j (j)}
-              {#if seg.kind === "error"}
-                <div class="err-block">
-                  <div class="err-head"><Icon name="circle-alert" size={12} /> PROVIDER ERROR</div>
-                  <div class="err-body">{seg.text}</div>
-                </div>
-              {:else}
-                <div class="text md">{@html renderMarkdown(seg.text)}</div>
-              {/if}
-            {/each}
+            {#if live}
+              <!-- The tail step is still growing, so render it as escaped
+                   plain text. A full markdown parse per streamed token is
+                   O(n²) — the cache key is the whole accumulating string, so
+                   every token misses and re-parses — and the {@html} write
+                   re-assigns the bubble's innerHTML each token, thrashing the
+                   cache and dropping text selection. Plain text is O(1) per
+                   token; the markdown render takes over the moment this step
+                   stops being the tail (a later step appended, or the turn
+                   settling into history). -->
+              <div class="text md live">{step.text ?? ""}</div>
+            {:else}
+              {#each segments(step.text ?? "") as seg, j (j)}
+                {#if seg.kind === "error"}
+                  <div class="err-block">
+                    <div class="err-head"><Icon name="circle-alert" size={12} /> PROVIDER ERROR</div>
+                    <div class="err-body">{seg.text}</div>
+                  </div>
+                {:else}
+                  <div class="text md">{@html renderMarkdown(seg.text)}</div>
+                {/if}
+              {/each}
+            {/if}
           {/if}
         {/each}
         {#each brain.approvals.filter((card) => !card.session_id || card.session_id === brain.session?.id) as card (card.request_id)}
@@ -476,3 +521,13 @@
     </div>
   {/if}
 </div>
+
+<style>
+  /* The live (still-growing) tail step renders as escaped plain text — see the
+     note at its use site. pre-wrap keeps the streamed line breaks that the
+     markdown render would otherwise supply via <p>/<br>. */
+  .text.md.live {
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+</style>

@@ -2,22 +2,29 @@
 
 A mixin aspect of :class:`~xu_brain.features.agent.loop.Agent`.
 """
+
 from __future__ import annotations
 
 import re
+import time
 from typing import Any
 
 from ...core.notify import notify
 from ..session import Message, Session
+from ..tools.logmeta import NOTE_ARG, clean_note
 from ..tools.registry import summarize_args as _summarize_args
 
 
 class LiveMixin:
     _MAX_RUN_STEPS = 200
 
-    def _capture_tool(self, name: str, args: dict[str, Any],
-                      session_id: str | None = None,
-                      call_id: str | None = None) -> dict[str, Any]:
+    def _capture_tool(
+        self,
+        name: str,
+        args: dict[str, Any],
+        session_id: str | None = None,
+        call_id: str | None = None,
+    ) -> dict[str, Any]:
         """Start a tool step, including delegate identity before execution.
 
         `args` is summarized to the same one-line form the registry emits on the
@@ -28,8 +35,17 @@ class LiveMixin:
         `call_id` is the provider's tool-call id. Concurrent siblings share a
         tool name, so it is the only stable way to settle the right chip.
         """
-        step = {"kind": "tool", "tool": name, "args": _summarize_args(args),
-                "status": "running", "elapsed": None, "output": None}
+        step = {
+            "kind": "tool",
+            "tool": name,
+            "args": _summarize_args(args),
+            "status": "running",
+            "elapsed": None,
+            "output": None,
+        }
+        note = clean_note(args.get(NOTE_ARG))
+        if note:
+            step["note"] = note
         if call_id:
             step["call_id"] = call_id
         if name == "delegate":
@@ -60,8 +76,12 @@ class LiveMixin:
             # the one-line chip summary ("label=researcher prompt=…"), so read
             # the name out of that rather than parsing JSON. `child` is the
             # tool's accepted alias for `label`, so match either spelling.
-            if (event == "turn.tool" and kw.get("status") == "running"
-                    and step.get("tool") == "delegate" and not step.get("subagent_run")):
+            if (
+                event == "turn.tool"
+                and kw.get("status") == "running"
+                and step.get("tool") == "delegate"
+                and not step.get("subagent_run")
+            ):
                 m = re.search(r"(?:^|\s)(?:child|label)=(\S+)", str(step.get("args") or ""))
                 run = self._claim_delegation(session_id, m.group(1) if m else None)
                 if run is not None:
@@ -71,6 +91,14 @@ class LiveMixin:
                 kw = {**kw, "subagent_count": step["subagent_count"]}
             if step.get("subagent_run") and event == "turn.tool":
                 kw = {**kw, "subagent_run": step["subagent_run"], "subagent": step.get("subagent")}
+            # Display metadata begins on the running event. Echo it into later
+            # partial updates and into the persisted step.
+            if event == "turn.tool":
+                for key in ("note", "cwd"):
+                    if kw.get(key):
+                        step[key] = kw[key]
+                    elif step.get(key):
+                        kw = {**kw, key: step[key]}
             await base(event, **kw)
             if event == "turn.tool" and kw.get("status") in ("ok", "error"):
                 step["status"] = kw["status"]
@@ -79,6 +107,10 @@ class LiveMixin:
                 if kw.get("subagent_run"):
                     step["subagent_run"] = kw["subagent_run"]
                     step["subagent"] = kw.get("subagent")
+                if kw.get("note"):
+                    step["note"] = kw["note"]
+                if kw.get("cwd"):
+                    step["cwd"] = kw["cwd"]
                 # show_image chips carry the picture itself; without this the
                 # image showed live and then vanished on the next session load.
                 if kw.get("image"):
@@ -100,7 +132,7 @@ class LiveMixin:
         live = self._live_turns.get(session.id)
         if not live or live.get("persisted"):
             return False
-        steps = [dict(step) for step in live.get("steps", [])]
+        steps = [dict(step) for step in self._settle_reasoning(live.get("steps", []))]
         text = "".join(str(step.get("text") or "") for step in steps if step.get("kind") == "text")
         reasoning = str(live.get("reasoning") or "")
         if not text and not reasoning and not steps:
@@ -122,10 +154,39 @@ class LiveMixin:
             return None
         return live
 
+    def _close_reasoning(self, steps: list[dict[str, Any]]) -> None:
+        """Stamp `elapsed` on the reasoning step that just ended, the way a tool
+        chip gets its time. Called when the model moves on to something that is
+        not thinking, so the span is first-delta to the boundary — a thought
+        streamed in a single chunk still measures correctly, which a
+        first-delta-to-last-delta span would have reported as zero.
+        """
+        if not steps:
+            return
+        tail = steps[-1]
+        t0 = tail.pop("_t0", None)
+        if tail.get("kind") == "reasoning" and t0 is not None and tail.get("elapsed") is None:
+            tail["elapsed"] = round(time.perf_counter() - t0, 2)
+
+    def _settle_reasoning(self, steps: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Drop the private `_t0` stamp from a segment still open at the end of
+        the turn, so it never reaches the persisted row.
+
+        An unfinished thought keeps no duration: the turn was cut short, and
+        the time since its last delta is whatever the stop path took, not the
+        model's. Nothing honest to report, so nothing is shown.
+        """
+        for step in steps:
+            step.pop("_t0", None)
+        return steps
+
     def _merge_live(self, live: dict[str, Any], event: str, kw: dict[str, Any]) -> None:
         """Mirror one turn.* emission into the live snapshot (same shapes as
         the shell's TurnDraft: steps[] + reasoning)."""
         steps = live.setdefault("steps", [])
+        if event != "turn.reasoning":
+            # Anything that is not thinking ends the thinking segment before it.
+            self._close_reasoning(steps)
         if event == "turn.delta":
             delta = str(kw.get("delta") or "")
             if delta:
@@ -140,7 +201,7 @@ class LiveMixin:
                 if steps and steps[-1].get("kind") == "reasoning":
                     steps[-1]["text"] = (steps[-1].get("text") or "") + delta
                 else:
-                    steps.append({"kind": "reasoning", "text": delta})
+                    steps.append({"kind": "reasoning", "text": delta, "_t0": time.perf_counter()})
         elif event == "turn.tool":
             tool = str(kw.get("tool") or "")
             call_id = kw.get("call_id")
@@ -152,6 +213,10 @@ class LiveMixin:
                 "elapsed": kw.get("elapsed"),
                 "output": kw.get("output"),
             }
+            if kw.get("note"):
+                chip["note"] = kw["note"]
+            if kw.get("cwd"):
+                chip["cwd"] = kw["cwd"]
             if call_id:
                 chip["call_id"] = call_id
             # delegate chips carry the sub-agent run so the shell can open its
@@ -170,19 +235,43 @@ class LiveMixin:
             # siblings share a name, so a name match settled the wrong chip and
             # left the other sub-agents' chips running forever.
             if call_id:
-                idx = next((i for i, s in enumerate(steps)
-                            if s.get("kind") == "tool" and s.get("call_id") == call_id), None)
+                idx = next(
+                    (
+                        i
+                        for i, s in enumerate(steps)
+                        if s.get("kind") == "tool" and s.get("call_id") == call_id
+                    ),
+                    None,
+                )
             else:
                 idx = next(
-                    (i for i, s in enumerate(steps)
-                     if s.get("kind") == "tool" and s.get("tool") == tool
-                     and s.get("status") == "running" and not s.get("call_id")),
+                    (
+                        i
+                        for i, s in enumerate(steps)
+                        if s.get("kind") == "tool"
+                        and s.get("tool") == tool
+                        and s.get("status") == "running"
+                        and not s.get("call_id")
+                    ),
                     None,
                 )
             if idx is not None:
                 steps[idx] = {**steps[idx], **chip}
             else:
                 steps.append(chip)
+        elif event == "turn.guard":
+            # The loop guard fired: the warning is part of the turn's timeline,
+            # so a resync mid-turn (subagent activity view) still shows it.
+            text = str(kw.get("text") or "")
+            if text:
+                steps.append(
+                    {
+                        "kind": "guard",
+                        "text": text,
+                        "count": kw.get("count"),
+                        "tier": kw.get("tier"),
+                    }
+                )
 
     async def _emit_for(self, session_id: str, turn_id: str, event: str, **kw: Any) -> None:
         """Emit a turn.* event tagged with its session so multi-tab shells can

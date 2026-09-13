@@ -11,7 +11,8 @@
 <script lang="ts">
   import type { Step } from "../types";
   import { openImage } from "../lightbox.svelte";
-  import { toolShape, isReadOnly, headline, target, fileTab, splitExit, lineCount } from "../toolshape";
+  import { toolShape, isReadOnly, headline, displayLocation, displayDescription, fileTab, splitExit, lineCount } from "../toolshape";
+  import { dur } from "../format";
   import Icon from "./Icon.svelte";
 
   let {
@@ -46,16 +47,15 @@
 
   const shape = $derived(toolShape(step.tool));
   const status = $derived(step.status === "ok" ? "ok" : step.status === "error" ? "err" : "run");
-  // Running keeps the braille spinner (it animates in text, no SVG needed);
-  // the settled states get a real glyph.
-  // The closed head shows the tool name plus one short target (basename, or the
-  // command). Everything longer — full dir, whole command, raw args — waits
-  // inside the open pane.
+  // Location describes the actual execution target; only the model-written
+  // note adds intent. Old history keeps literal command/query fallbacks.
   const head = $derived(headline(step.tool, step.args));
-  // `subagent` is the *resolved* squad-member name the brain tagged the chip
-  // with, so it beats the `label` arg (which is absent when a plain agent
-  // delegates without naming a child).
-  const what = $derived(step.subagent || target(step.tool, step.args));
+  // A resolved delegate name beats the requested label. Multi-agent rounds
+  // keep their count in the head and individual names in activity/details.
+  const location = $derived(
+    (step.tool === "delegate" && step.subagent) || displayLocation(step.tool, step.args, step.cwd),
+  );
+  const description = $derived(displayDescription(step.tool, step.args, step.note, step.cwd));
   /** How many sub-agents this delegate round spawned. The brain sums the whole
    *  round, so sibling calls and a `tasks` batch both report the real total. */
   const spawned = $derived(
@@ -63,29 +63,23 @@
   );
   /** One name is misleading while several run — the count carries the round and
    *  the activity tabs carry the individual names. */
-  const showWhat = $derived(Boolean(what) && spawned < 2);
+  const showLocation = $derived(Boolean(location) && spawned < 2);
   const tab = $derived(fileTab(head));
   const term = $derived(splitExit(step.output));
   const lines = $derived(lineCount(step.output));
   const hasBody = $derived(step.output != null && step.output !== "");
-  /** Terminal + note panes number their lines; cap the DOM at a sane depth
-   *  (the brain already caps chip output at 2000 chars). */
-  const bodyLines = $derived(term.body.split("\n").slice(0, 400));
+  // The backend caps output; never discard any of that available payload here.
+  const bodyLines = $derived(term.body.split("\n"));
 
   function toggle(): void {
     if (hasBody) open = !open;
   }
   // A native <button> already fires click on Enter/Space — no key handler.
-  /** Elapsed seconds → 1 decimal, matching the rest of the shell. */
-  function frac(s: number): string {
-    return (Math.trunc(s * 10) / 10).toFixed(1);
-  }
 </script>
 
-<!-- The chip frame is inert; the head is a real <button> so keyboard and
-     screen-reader users get native disclosure semantics, and a chip with no
-     output is simply a disabled control. The sub-agent button is a sibling of
-     the head, not a child — nested buttons are invalid HTML. -->
+<!-- The compact row carries location and action. Expanding shows tool output
+     only, with no repeated metadata form. The activity button stays a sibling
+     of the head — nested buttons are invalid HTML. -->
 <div class="toollog {status} shape-{shape} v-{variant}" class:open class:ro={isReadOnly(step.tool)}>
   <div class="tl-row">
     <button
@@ -95,18 +89,19 @@
       aria-expanded={hasBody ? open : undefined}
       onclick={toggle}
     >
-      <span class="tl-icon">
+      <span class="tl-tool" title={step.tool}>{step.tool}</span>
+      {#if showLocation}<span class="tl-what tl-location" title={location}>{location}</span>{/if}
+      {#if description}<span class="tl-description" title={description}>{description}</span>{/if}
+      {#if spawned}
+        <span class="tl-spawn">{spawned} agent{spawned === 1 ? "" : "s"} spawned</span>
+      {/if}
+      <span class="tl-icon" title={step.status ?? "running"} aria-label={step.status ?? "running"}>
         {#if step.status === "ok"}<Icon name="check" size={13} />
         {:else if step.status === "error"}<Icon name="x" size={13} />
         {:else}{FRAMES[frame]}{/if}
       </span>
-      <span class="tl-tool">{step.tool}</span>
-      {#if showWhat}<span class="tl-what">{what}</span>{/if}
-      {#if spawned}
-        <span class="tl-spawn">{spawned} agent{spawned === 1 ? "" : "s"} spawned</span>
-      {/if}
       <span class="tl-state">
-        {#if step.status === "running"}RUNNING{:else if step.elapsed != null}{frac(step.elapsed)}s{:else}{(step.status ?? "ok").toUpperCase()}{/if}
+        {#if step.status === "running"}RUNNING{:else if step.elapsed != null}{dur(step.elapsed)}{:else}{(step.status ?? "ok").toUpperCase()}{/if}
       </span>
       {#if hasBody}<span class="tl-caret" aria-hidden="true"><Icon name={open ? "chevron-down" : "chevron-right"} size={12} /></span>{/if}
     </button>
@@ -135,8 +130,6 @@
   {#if open && hasBody}
     {#if shape === "terminal"}
       <div class="tl-term">
-        <!-- title is the tool, not the command: the head already names the
-             command and the bash tool echoes it as the first output line. -->
         <div class="tl-term-bar"><span class="tl-dots"><i></i><i></i><i></i></span><span class="tl-term-title">{step.tool}</span></div>
         <div class="tl-term-out">{#each bodyLines as l, i (i)}<span class="tl-line">{l || " "}</span>{/each}</div>
         {#if term.exit}<div class="tl-term-exit" class:bad={status === "err"}>{term.exit}</div>{/if}
@@ -147,7 +140,7 @@
         <div class="tl-note-page">{#each bodyLines as l, i (i)}<span class="tl-nline"><em>{i + 1}</em>{l || " "}</span>{/each}</div>
       </div>
     {:else}
-      {#if step.args}<div class="tl-detail"><span class="tl-args">{step.args}</span>{#if shape === "search" && lines > 0}<span class="tl-hits">{lines} {lines === 1 ? "hit" : "hits"}</span>{/if}</div>{/if}
+      {#if shape === "search" && lines > 0}<div class="tl-detail"><span class="tl-hits">{lines} {lines === 1 ? "hit" : "hits"}</span></div>{/if}
       <div class="tl-body">{step.output}</div>
     {/if}
   {/if}
@@ -180,24 +173,26 @@
     font-size: 11.5px; color: var(--dim, #8c9ab1);
   }
   .tl-head:disabled { cursor: default; }
-  .tl-icon { width: 14px; display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0; color: var(--cyan, #68e0cc); }
+  .tl-icon { margin-left: auto; width: 14px; display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0; color: var(--cyan, #68e0cc); }
   .ok .tl-icon { color: var(--ok, #68e0cc); }
   .err .tl-icon { color: var(--danger, #ff7886); }
-  .tl-tool { color: var(--cyan, #68e0cc); font-weight: bold; flex-shrink: 0; }
-  /* one-line target: shrinks and ellipsizes before the tool name ever does */
-  .tl-what {
-    min-width: 0; color: var(--text, #e6e6e6);
+  .tl-tool { color: var(--cyan, #68e0cc); font-weight: bold; min-width: 0; flex-shrink: 0; max-width: 25%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  /* Independent one-line fields; full strings remain in hover titles. */
+  .tl-location {
+    min-width: 0; max-width: 40%; flex: 0 1 auto; color: var(--dim, #8c9ab1);
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   }
-  .ro .tl-what { color: var(--dim, #8c9ab1); }
-  .tl-args { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; color: var(--faint, #4f5d74); }
+  .tl-description {
+    min-width: 0; flex: 0 1 auto; color: var(--text, #e6e6e6);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
   /* delegate: how many sub-agents this call spawned */
   .tl-spawn {
     flex-shrink: 0; color: var(--magenta, #c49bff);
     font-size: 10.5px; white-space: nowrap;
   }
   .tl-state {
-    margin-left: auto; flex-shrink: 0;
+    flex-shrink: 0;
     font-family: var(--pixel, var(--mono, monospace)); font-size: 10.5px; padding: 1px 5px;
   }
   .run .tl-state { color: var(--amber, #ffd27c); }

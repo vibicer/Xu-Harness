@@ -32,7 +32,7 @@ export function EventsMixin<T extends Ctor<StoreCoreBase>>(Base: T) {
         const sid = this.eventSessionId(params);
         if (!sid || !this.isOpenTab(sid)) return;
         const tab = this.ensureTab(sid);
-        tab.draft = EMPTY_DRAFT;
+        tab.draft = { ...EMPTY_DRAFT, startedAt: Date.now() };
         tab.busy = true;
         tab.queued = []; // queued sends become real history rows on reload
         break;
@@ -52,6 +52,25 @@ export function EventsMixin<T extends Ctor<StoreCoreBase>>(Base: T) {
           notice: undefined, // the model is answering — any retry notice is spent
           reasoning: (d.reasoning ?? "") + String(params.delta ?? ""),
           steps: pushReasoning(d.steps, String(params.delta ?? "")),
+        }));
+        break;
+      }
+      case "turn.guard": {
+        // The loop guard fired: a warning chip enters the timeline where the
+        // model itself just got its system reminder.
+        const sid = this.eventSessionId(params);
+        if (!sid || !this.isOpenTab(sid)) break;
+        const text = String(params.text ?? "");
+        if (!text) break;
+        const count = Number(params.count ?? 0);
+        const tier = Number(params.tier ?? 1);
+        this.applyDraftFor(sid, (d) => ({
+          ...d,
+          steps: [...d.steps, {
+            kind: "guard", text,
+            count: Number.isFinite(count) ? count : 0,
+            tier: Number.isFinite(tier) ? tier : 1,
+          }],
         }));
         break;
       }
@@ -135,7 +154,10 @@ export function EventsMixin<T extends Ctor<StoreCoreBase>>(Base: T) {
         });
         tab.messages = [...tab.messages, ...assistantRows, ...userRows];
         tab.queued = tab.queued.filter((q) => !q.id || !drainedIds.has(q.id));
-        tab.draft = EMPTY_DRAFT;
+        // The draft restarts for the next segment, but the clock does not: the
+        // counter answers "how long has Xu been on this turn", and a mid-turn
+        // dequeue resetting it to 0.0s would read as a glitch.
+        tab.draft = { ...EMPTY_DRAFT, startedAt: tab.draft?.startedAt ?? Date.now() };
         break;
       }
       case "turn.tool": {
@@ -157,15 +179,24 @@ export function EventsMixin<T extends Ctor<StoreCoreBase>>(Base: T) {
           const chip: Step = {
             kind: "tool",
             tool,
-            args: String(params.args ?? ""),
+            // Settling events may omit available args/metadata. Spread only
+            // present fields so merging cannot erase the running chip's data.
+            ...(typeof params.args === "string" ? { args: params.args } : {}),
+            ...(typeof params.note === "string" ? { note: params.note } : {}),
+            ...(typeof params.cwd === "string" ? { cwd: params.cwd } : {}),
             status,
-            elapsed: (params.elapsed as number | undefined) ?? null,
-            output: (params.output as string | undefined) ?? null,
+            ...(typeof params.elapsed === "number" || params.elapsed === null
+              ? { elapsed: params.elapsed }
+              : {}),
+            ...(typeof params.output === "string" || params.output === null
+              ? { output: params.output }
+              : {}),
             call_id: callId,
-            subagent_run: typeof params.subagent_run === "string" ? params.subagent_run : undefined,
-            subagent: typeof params.subagent === "string" ? params.subagent : undefined,
-            subagent_count:
-              typeof params.subagent_count === "number" ? params.subagent_count : undefined,
+            ...(typeof params.subagent_run === "string" ? { subagent_run: params.subagent_run } : {}),
+            ...(typeof params.subagent === "string" ? { subagent: params.subagent } : {}),
+            ...(typeof params.subagent_count === "number"
+              ? { subagent_count: params.subagent_count }
+              : {}),
             // show_image: a data URL rides on the settling chip. Spread it in
             // only when present — the running chip has none, and merging an
             // `undefined` back over a settled step would erase the picture.

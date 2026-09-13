@@ -25,7 +25,27 @@
   // A plugin view can vanish while it is open (disabled, uninstalled) — land
   // on the chat rather than sit on a blank screen.
   $effect(() => pluginViewGuard(brain));
+
+  // Below 1080px theme.css turns the 300px state rail into an overlay drawer
+  // (300px of a 390px screen is not a column, it is the whole screen) and
+  // reveals #astate-toggle. Desktop keeps the rail pinned and never shows it,
+  // so this state is inert there.
+  let astateOpen = $state(false);
+
+  function toggleAstate(): void {
+    // Tapping STATE from Config/Sessions should open the drawer over the chat,
+    // not reveal a rail on a view that has none.
+    if (!astateOpen) brain.setView("workspace");
+    astateOpen = !astateOpen;
+  }
+
+  function onKeydown(e: KeyboardEvent): void {
+    if (e.key === "Escape" && astateOpen) astateOpen = false;
+  }
+
 </script>
+
+<svelte:window onkeydown={onKeydown} />
 
 <div class="app-root">
   <Dock />
@@ -57,8 +77,27 @@
           </div>
         {/each}
         <button class="session-tab-add" onclick={() => void brain.newSession()} aria-label="New session"><Icon name="plus" size={15} /></button>
+        <button
+          id="astate-toggle"
+          type="button"
+          aria-controls="astate"
+          aria-expanded={astateOpen}
+          class:active={astateOpen}
+          onclick={toggleAstate}
+        >
+          <span>STATE</span>
+          <Icon name="fold-vertical" size={14} />
+        </button>
       </div>
-      <div id="view-workspace" class="view" class:active={brain.view === "workspace"}><div id="ws-row"><Chat /><AgentState /></div></div>
+      <div id="view-workspace" class="view" class:active={brain.view === "workspace"}>
+        <div id="ws-row" class:astate-open={astateOpen}>
+          {#if astateOpen}
+            <button class="astate-backdrop" type="button" aria-label="Close agent state" onclick={() => (astateOpen = false)}></button>
+          {/if}
+          <Chat />
+          <AgentState />
+        </div>
+      </div>
       <div id="view-sessions" class="view" class:active={brain.view === "sessions"}><SessionsView /></div>
       <div id="view-config" class="view" class:active={brain.view === "config"}><ConfigView /></div>
       <div id="view-logs" class="view" class:active={brain.view === "logs"}><LogsView /></div>

@@ -11,7 +11,9 @@ process on deactivate.
 import asyncio
 import importlib.util
 import json
+import os
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -116,6 +118,44 @@ def test_seeding_ignores_a_source_dir_without_a_manifest(tmp_path: Path) -> None
 
     assert seed_builtin_plugins(tmp_path, source=source) == []
     assert not (tmp_path / "plugins" / "not-a-plugin").exists()
+
+
+def test_a_user_plugin_without_a_version_is_never_overwritten(tmp_path: Path, caplog) -> None:
+    """``version`` is optional in the manifest schema, so ``_version()``
+    returning ``None`` used to read as "outdated" and the shipped package was
+    copied straight over the user's own plugin — silently, with no log line."""
+    user = tmp_path / "plugins" / "mcp"
+    user.mkdir(parents=True)
+    (user / "manifest.json").write_text(
+        json.dumps({"name": "mcp", "description": "my own plugin"}), "utf-8"
+    )
+    (user / "activate.py").write_text("MINE = True\n", "utf-8")
+
+    # WARNING, not INFO: the brain configures no log handlers, so only
+    # WARNING-and-up reaches brain.log — the user must be able to see why.
+    with caplog.at_level("WARNING"):
+        assert seed_builtin_plugins(tmp_path) == []
+    assert json.loads((user / "manifest.json").read_text())["description"] == "my own plugin"
+    assert (user / "activate.py").read_text() == "MINE = True\n"
+    assert "mcp" in caplog.text, "a skipped seed must say why"
+
+
+def test_a_user_plugin_dir_with_an_unreadable_or_absent_manifest_survives(tmp_path: Path) -> None:
+    """A directory we cannot prove is ours is the user's: an unreadable manifest
+    (or none at all) must never be treated as a stale built-in."""
+    broken = tmp_path / "plugins" / "mcp"
+    broken.mkdir(parents=True)
+    (broken / "manifest.json").write_text("{ not json", "utf-8")
+    (broken / "activate.py").write_text("MINE = True\n", "utf-8")
+
+    assert seed_builtin_plugins(tmp_path) == []
+    assert (broken / "manifest.json").read_text() == "{ not json"
+    assert (broken / "activate.py").read_text() == "MINE = True\n"
+
+    # Same again with no manifest file at all.
+    (broken / "manifest.json").unlink()
+    assert seed_builtin_plugins(tmp_path) == []
+    assert (broken / "activate.py").read_text() == "MINE = True\n"
 
 
 # ---- the client ------------------------------------------------------- #
@@ -381,5 +421,82 @@ async def test_hand_edited_config_shows_up_without_a_reload(tmp_path: Path) -> N
         # Present but not started: listing must not spawn anything.
         assert snap["servers"][0]["state"] == "off"
         assert snap["config"].endswith("mcp.json")
+    finally:
+        host.deactivate_all()
+
+
+# ---- a failed handshake must not leak a child process ------------------ #
+
+
+def _pid_of(path: Path, timeout: float = 5.0) -> int:
+    """Wait for the child to record its own pid, then return it."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            return int(path.read_text())
+        except (OSError, ValueError):
+            time.sleep(0.02)
+    raise AssertionError(f"the child never wrote its pid to {path}")
+
+
+def _assert_reaped(pid: int, timeout: float = 5.0) -> None:
+    """Gone from the process table — not merely unreferenced."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return
+        time.sleep(0.02)
+    raise AssertionError(f"child pid {pid} is still alive")
+
+
+async def test_failed_handshake_leaves_no_live_child(tmp_path: Path) -> None:
+    """Regression: ``_connect`` returned the client only *after* ``start()``, so
+    a server that spawned but never answered ``initialize`` dropped the client
+    with ``self._proc`` still alive and its own process group intact. Nothing
+    held a reference, so disconnect/stop_all/deactivate/shutdown all walked past
+    it — one leaked child per Connect press on a flaky server.
+    """
+    pidfile = tmp_path / "child.pid"
+    # Spawns, records its pid, then blocks forever without answering.
+    silent = (
+        "import os, sys, time;"
+        "open(sys.argv[1], 'w').write(str(os.getpid()));"
+        "time.sleep(120)"
+    )
+    (tmp_path / "mcp.json").write_text(json.dumps({
+        "mcpServers": {
+            "silent": {
+                "command": sys.executable,
+                "args": ["-c", silent, str(pidfile)],
+                "timeout": 0.6,
+            }
+        }
+    }), "utf-8")
+    seed_builtin_plugins(tmp_path)
+    app = _App(tmp_path)
+    host = PluginHost(HookBus())
+    host.load_dir(tmp_path / "plugins", app)
+    await host.ready()  # activate() autostarts, so this is connect #1
+    module = host._live["mcp"][1]
+    try:
+        first = _pid_of(pidfile)
+        _assert_reaped(first, timeout=2.0)
+
+        # A fresh pidfile so the second connect's child is distinguishable.
+        pidfile.unlink()
+        row = await app.rpcs["mcp.connect"]({"name": "silent"})
+        assert row["state"] == "error" and "timed out" in row["error"], row
+        assert module.live_clients() == {}
+        second = _pid_of(pidfile)
+        assert second != first
+        _assert_reaped(second, timeout=2.0)
+
+        # Nothing is registered to close, so stop_all() has nothing to do — the
+        # child must already be gone, not merely unreferenced. `_HUB` is the
+        # module's own handle (the one `live_clients()` reads).
+        await module._HUB.stop_all()  # noqa: SLF001
+        assert module.live_clients() == {}
     finally:
         host.deactivate_all()

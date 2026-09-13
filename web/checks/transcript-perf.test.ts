@@ -233,3 +233,167 @@ import { segments } from "../src/lib/components/chat/messages.ts";
   );
   assert.ok(!/if \(turnEnded\)\s*return;/.test(src), "the finished turn is pinned, not skipped");
 }
+
+// 10. A compaction divider must never be the whole window. Real regression,
+//     reported as "context reached the threshold, it compressed, I restarted
+//     Xu, and the session's responses were gone — only the context-compacted
+//     notice remained".
+//
+//     Root cause: a divider is a turn with no assistant, so `turnSteps` is 0
+//     for it. `mountBatch`'s `count > 0` guard was therefore satisfied by the
+//     divider alone, the next — step-heavy — turn busted the 160-step budget,
+//     and the window armed to exactly ONE turn: the divider. On a restart the
+//     transcript re-arms from scratch (live appends no longer prop it up), so
+//     that is precisely when it showed. One row doesn't overflow the viewport,
+//     which is the second half of the trap: no scroll, so no sample for
+//     `backfill`, so the chain that mounts the rest never started.
+{
+  const { displayTurns, armMount, mountBatch, totalSteps } =
+    await import("../src/lib/components/chat/messages.ts");
+
+  const user = (t: string) => ({ role: "user", content: t });
+  const asst = (steps: number) => ({
+    role: "assistant",
+    content: "done",
+    steps: Array.from({ length: steps }, () => ({})),
+  });
+  const divider = { role: "system", content: "[conversation summary]\nsummary", steps: [{}] };
+
+  // The divider parses as its own turn, and it carries no assistant.
+  const turns = displayTurns([user("hi"), asst(700), divider] as never);
+  assert.equal(turns.length, 2, "divider is its own turn");
+  assert.equal(turns[1].assistant, null, "a divider has no assistant");
+  assert.ok(turns[1].divider, "…it is the divider turn");
+
+  // A heavy history (busts the eager budget) ending in a divider must still
+  // arm to real content, not to the marker by itself.
+  const armed = armMount(turns, 40, 160);
+  const shown = turns.slice(-armed);
+  assert.ok(
+    shown.some((t) => t.user || t.assistant),
+    `window armed to a lone divider (armed=${armed}) — the session would open ` +
+      `showing only "context compacted"`,
+  );
+
+  // The batch rule directly: a 0-step divider may not satisfy the
+  // "at least one turn" guarantee on its own.
+  const dTurn = { user: null, assistant: null, assistantIdx: -1, divider: divider };
+  const heavyTurn = { user: user("q"), assistant: asst(700), assistantIdx: 1 };
+  assert.equal(
+    mountBatch([heavyTurn, dTurn] as never, 2, 20, 160),
+    2,
+    "divider + the turn it follows both mount",
+  );
+  // …and the guarantee still stops where it must: a content turn is enough,
+  // so a second heavy turn beyond it is still held back.
+  const t1 = { user: user("a"), assistant: asst(300), assistantIdx: 1 };
+  const t2 = { user: user("b"), assistant: asst(300), assistantIdx: 3 };
+  assert.equal(mountBatch([t1, t2, dTurn] as never, 3, 20, 160), 2, "one content turn is the floor");
+
+  // A trailing divider must not change a cheap session's eager mount.
+  const cheap = displayTurns([user("hi"), asst(20), divider] as never);
+  assert.equal(armMount(cheap, 40, 160), cheap.length, "cheap session still arms whole");
+  assert.ok(totalSteps(cheap) <= 600, "…and stays under the eager budget");
+}
+
+// 11. A partial window must be able to start its backfill chain without a
+//     scroll. `backfill === null` means "reader is mid-window, mount nothing",
+//     and the only thing that ever set it was the scroll the pin fires — but a
+//     transcript that fits the viewport never scrolls, so a partial window
+//     could sit there forever showing only what it armed with. Arming lands the
+//     reader on the newest response, so a partial window is already AT the edge
+//     and Transcript must say so.
+{
+  const { readFileSync } = await import("node:fs");
+  const src = readFileSync(
+    new URL("../src/lib/components/chat/Transcript.svelte", import.meta.url),
+    "utf8",
+  );
+  assert.match(
+    src,
+    /if \(!tailLocked\) backfill = "edge"/,
+    "a partial arm must declare the edge instead of waiting for a scroll that may never come",
+  );
+  const { backfillMode } = await import("../src/lib/components/chat/messages.ts");
+  const box = (scrollTop: number, scrollHeight: number, clientHeight: number) => ({
+    scrollTop,
+    scrollHeight,
+    clientHeight,
+  });
+  // The mode function was never the problem — a non-scrolling transcript
+  // already reads "edge". It just was never asked.
+  assert.equal(backfillMode(box(0, 400, 900)), "edge", "too short to scroll reads as the edge");
+}
+
+// 12. The same trap, one level up: the backfill chain used a TURN-COUNT proxy
+//     for "everything is already mounted" (`len <= MOUNT_CHUNK`). A step-heavy
+//     history breaks that proxy — 9 turns of 300 steps each arm to ONE turn,
+//     and the chain then never started, so 8 turns were unreachable with
+//     nothing on screen to scroll for them. `step()` already stops when the
+//     window reaches the end, so the count test was both wrong and redundant.
+{
+  const { readFileSync } = await import("node:fs");
+  const src = readFileSync(
+    new URL("../src/lib/components/chat/Transcript.svelte", import.meta.url),
+    "utf8",
+  );
+  assert.ok(
+    !/if \(!backfill \|\| len <= MOUNT_CHUNK\) return;/.test(src),
+    "the turn-count proxy must not gate the backfill chain",
+  );
+  assert.match(
+    src,
+    /if \(!backfill\) return;/,
+    "the chain starts on intent; step() stops it at the end of the window",
+  );
+
+  const { displayTurns, armMount, totalSteps } =
+    await import("../src/lib/components/chat/messages.ts");
+  const msgs: unknown[] = [];
+  for (let i = 0; i < 9; i++) {
+    msgs.push(
+      { role: "user", content: `q${i}` },
+      { role: "assistant", content: "done", steps: Array.from({ length: 300 }, () => ({})) },
+    );
+  }
+  const turns = displayTurns(msgs as never);
+  const armed = armMount(turns, 40, 160);
+  assert.equal(turns.length, 9, "nine turns");
+  assert.ok(totalSteps(turns) > 600, "…that bust the eager budget, so they window");
+  assert.ok(armed < turns.length, `…to a partial window (${armed})`);
+  assert.ok(armed < 20, "and a partial window under the old chunk bound is exactly the case that was stuck");
+}
+
+// 13. The live streaming tail must not re-parse markdown per token. The draft
+//     calls renderMarkdown(seg.text) on the ACCUMULATING last text step once
+//     per streamed token; the cache key is the whole growing string, so every
+//     token is a miss and a full re-parse, and the {@html} write re-assigns the
+//     bubble's innerHTML — O(n²) main-thread work that also drops selection.
+//     Contract: the tail step (still the last, still growing) renders as
+//     escaped plain text; markdown is parsed only once it settles.
+{
+  const src = readFileSync(new URL("../src/lib/components/chat/Transcript.svelte", import.meta.url), "utf8");
+  assert.match(
+    src,
+    /const live = i === draftSteps\.length - 1/,
+    "the still-growing tail step is recognised",
+  );
+  const liveAt = src.indexOf("{#if live}");
+  assert.ok(liveAt >= 0, "the draft text step branches on `live`");
+  const liveBranch = src.slice(liveAt, src.indexOf("{:else}", liveAt));
+  assert.ok(
+    liveBranch.includes('class="text md live"'),
+    "the live tail renders as escaped plain text",
+  );
+  assert.ok(
+    !liveBranch.includes("renderMarkdown"),
+    "…and never parses markdown while it is still growing",
+  );
+  assert.match(
+    src,
+    /\.text\.md\.live \{[\s\S]{0,120}white-space: pre-wrap/,
+    "pre-wrap keeps the streamed line breaks the markdown render would supply",
+  );
+  // the settled path is untouched: the historical/step render still parses
+  assert.match(src, /\{:else\}\s*\{#each segments\(step\.text \?\? ""\)/, "the settled step still renders markdown");
+}

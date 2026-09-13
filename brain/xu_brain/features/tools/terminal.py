@@ -4,6 +4,7 @@ A single long-lived shell per session (process group, env inherited) so the
 agent's `cd`/exports persist across calls. PTY-backed for interactive safety
 and so prompts/ANSI behave. Per-call timeout; output capped by the registry.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -24,9 +25,17 @@ from .base import Tool, ToolContext, ToolResult
 # Per-stream output bounds: an in-memory cap with overflow spilling to a temp
 # file, a spill cap, and an explicit truncation flag. Keeps the daemon from
 # buffering unbounded command output in RAM.
-_BASH_MAX_STREAM = 64 * 1024         # in-memory bytes kept per stream (stdout/stderr)
-_BASH_MAX_SPILL = 64 * 1024 * 1024   # temp-file spill cap per stream
-_BASH_READ_CHUNK = 64 * 1024         # bytes per stream read (NOT a line cap)
+_BASH_MAX_STREAM = 64 * 1024  # in-memory bytes kept per stream (stdout/stderr)
+_BASH_MAX_SPILL = 64 * 1024 * 1024  # temp-file spill cap per stream
+_BASH_READ_CHUNK = 64 * 1024  # bytes per stream read (NOT a line cap)
+
+# Per-call timeout bounds. A caller-supplied value is clamped into this range:
+# an unbounded one would hold the shell lock for as long as the model asked,
+# and a negative one expires instantly — which discards the persistent shell
+# and silently loses the model's `cd`/exports.
+_BASH_TIMEOUT_MIN = 1.0
+_BASH_TIMEOUT_MAX = 600.0
+_BASH_TIMEOUT_DEFAULT = 120.0
 
 
 # ---------------------------------------------------------------------------
@@ -138,6 +147,22 @@ def _fmt_bytes(n: int) -> str:
     return f"{n} B"
 
 
+def _clamp_timeout(value: Any, default: float) -> float:
+    """Bound a caller-supplied timeout to [_BASH_TIMEOUT_MIN, _BASH_TIMEOUT_MAX].
+
+    A non-numeric value falls back to `default`; NaN does too, since it
+    survives both `min` and `max` and would reach `asyncio.wait_for` as a
+    bogus deadline.
+    """
+    try:
+        t = float(value)
+    except (TypeError, ValueError):
+        return default
+    if t != t:  # NaN
+        return default
+    return min(max(t, _BASH_TIMEOUT_MIN), _BASH_TIMEOUT_MAX)
+
+
 class _StreamBuffer:
     """Per-stream output collector: a bounded in-memory head, overflow spilled
     to an anonymous temp file (capped), and overflow beyond the spill cap only
@@ -189,6 +214,8 @@ class _StreamBuffer:
         if self._file is not None:
             self._file.close()
             self._file = None
+
+
 _SHELLS: dict[str, "ShellSession"] = {}
 
 
@@ -409,16 +436,25 @@ class BashTool(Tool):
         "type": "object",
         "properties": {
             "command": {"type": "string", "description": "shell command to execute"},
-            "timeout": {"type": "number", "description": "seconds before kill (default 120)", "default": 120},
+            "timeout": {
+                "type": "number",
+                "description": "seconds before kill (default 120)",
+                "default": 120,
+            },
         },
         "required": ["command"],
     }
+
+    def execution_cwd(self, ctx: ToolContext) -> str:
+        """Directory in effect when this command starts (before it may `cd`)."""
+        shell = _session(ctx)
+        return ctx.cwd if ctx.cwd != shell._session_cwd else shell.cwd
 
     async def run(self, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
         command = str(args.get("command", "")).strip()
         if not command:
             return ToolResult.err("empty command")
-        timeout = float(args.get("timeout", 120))
+        timeout = _clamp_timeout(args.get("timeout", _BASH_TIMEOUT_DEFAULT), _BASH_TIMEOUT_DEFAULT)
         shell = _session(ctx)
         try:
             rc, out, err, elapsed = await shell.run(

@@ -122,3 +122,54 @@ async def test_single_compliant_call_still_works():
     assert len(calls_c) == 1 and calls_c[0].name == "bash"
     assert json.loads(calls_c[0].arguments) == {"cmd": "ls"}
     _expect_stop(events_c, StopReason.TOOL)
+
+
+def _sse_no_done(chunks):
+    """Same wire shape, but the stream ends on EOF (no ``[DONE]`` sentinel)."""
+    lines = ["data: " + json.dumps(c) for c in chunks]
+    return ("\n\n".join(lines) + "\n\n").encode()
+
+
+async def test_tool_call_flushed_on_done_without_finish_reason():
+    """A relay that ends with ``[DONE]`` and never sends a finish_reason
+    chunk must still surface the buffered call. Before the fix the buffer was
+    flushed only inside the finish_reason branch, so the call vanished: the
+    loop saw no tool calls and no stop reason and ended the turn with
+    "[error] model returned no text this turn" -- and the model, seeing its
+    call unanswered, repeated the request."""
+    ch = []
+    ch.append(_chunk({"tool_calls": [_tc(0, "call_1", "bash", "")]}))
+    ch.append(_chunk({"tool_calls": [_tc(0, None, None, '{"cmd": "ls"}')]}))
+    events = await _run(_sse(ch))  # [DONE], but no STOP_TC
+    calls = _calls(events)
+    assert [c.id for c in calls] == ["call_1"]
+    assert calls[0].name == "bash"
+    assert json.loads(calls[0].arguments) == {"cmd": "ls"}
+    # The stream claimed no stop reason; none is invented for it either.
+    assert [ev.stop_reason for ev in events if ev.stop_reason] == []
+
+
+async def test_tool_call_flushed_on_eof_without_done():
+    """Same, for a relay that drops the connection without ``[DONE]``."""
+    ch = []
+    ch.append(_chunk({"tool_calls": [_tc(0, "call_2", "web_extract", "")]}))
+    ch.append(_chunk({"tool_calls": [_tc(0, None, None, '{"url": "https://x"}')]}))
+    events = await _run(_sse_no_done(ch))
+    calls = _calls(events)
+    assert [c.id for c in calls] == ["call_2"]
+    assert json.loads(calls[0].arguments) == {"url": "https://x"}
+
+
+async def test_repeated_finish_reason_does_not_duplicate_tool_call():
+    """A stream carrying a repeated finish_reason chunk must emit the call
+    exactly once. Emitting it twice declares the same ``tool_call_id`` on two
+    entries of the assistant row, and the loop appends two ``tool`` messages
+    carrying that id."""
+    ch = []
+    ch.append(_chunk({"tool_calls": [_tc(0, "call_1", "bash", "")]}))
+    ch.append(_chunk({"tool_calls": [_tc(0, None, None, '{"cmd": "ls"}')]}))
+    events = await _run(_sse(ch + [STOP_TC, STOP_TC]))
+    calls = _calls(events)
+    assert [c.id for c in calls] == ["call_1"]
+    assert json.loads(calls[0].arguments) == {"cmd": "ls"}
+    _expect_stop(events, StopReason.TOOL)

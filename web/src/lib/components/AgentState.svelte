@@ -46,9 +46,22 @@
     }
   }
   let modelOpen = $state(false);
+  let effortOpen = $state(false);
   let personaOpen = $state(false);
   let mpickEl = $state<HTMLDivElement | null>(null);
+  let epickEl = $state<HTMLDivElement | null>(null);
   let ppickEl = $state<HTMLDivElement | null>(null);
+
+  // The ladder comes from the brain's `app.info` rather than a copy here, so
+  // the picker can only offer values the wire accepts. Fetched once on mount:
+  // it is a static capability, not per-session state.
+  let efforts = $state<string[]>([]);
+  $effect(() => {
+    brain.client
+      .call<{ reasoning_efforts?: string[] }>("app.info")
+      .then((info) => (efforts = info.reasoning_efforts ?? []))
+      .catch(() => (efforts = []));
+  });
 
   let providerModels = $derived(
     brain.providers
@@ -67,7 +80,16 @@
     void brain.setPersona(p);
   }
 
+  function pickEffort(effort: string | null): void {
+    effortOpen = false;
+    void brain.setEffort(effort);
+  }
+
   let presetOpen = $state(false);
+  /** The PRESET picker's own ref — PERSONA and PRESET used to share `ppickEl`,
+   *  so whichever mounted last won and the outside-click test ran against the
+   *  wrong element. */
+  let presetEl = $state<HTMLDivElement | null>(null);
   let presetsList = $state<PresetInfo[]>([]);
   $effect(() => {
     if (presetOpen || tab === "rules") void brain.refreshPresets().then((ps) => (presetsList = ps));
@@ -282,12 +304,14 @@
     else if (tab === "tools") void brain.refreshSessionToolsets();
   });
 
-  // close the model/persona menus on any outside click
+  // close the model/effort/persona menus on any outside click
   $effect(() => {
-    if (!modelOpen && !personaOpen) return;
+    if (!modelOpen && !effortOpen && !personaOpen && !presetOpen) return;
     const onDoc = (e: MouseEvent) => {
       if (mpickEl && !mpickEl.contains(e.target as Node)) modelOpen = false;
+      if (epickEl && !epickEl.contains(e.target as Node)) effortOpen = false;
       if (ppickEl && !ppickEl.contains(e.target as Node)) personaOpen = false;
+      if (presetEl && !presetEl.contains(e.target as Node)) presetOpen = false;
     };
     document.addEventListener("mousedown", onDoc, true);
     return () => document.removeEventListener("mousedown", onDoc, true);
@@ -365,6 +389,43 @@
       </div>
     </div>
     <div class="model-row">
+      <span class="l">EFFORT</span>
+      <div class="mpick" bind:this={epickEl}>
+        <button
+          type="button"
+          class="mpick-btn"
+          aria-haspopup="listbox"
+          aria-expanded={effortOpen}
+          onclick={() => (effortOpen = !effortOpen)}
+          >
+          <span class="mpick-val" class:placeholder={!brain.state.reasoning_effort}>{brain.state.reasoning_effort ?? "— default —"}</span>
+          <span class="mpick-caret"><Icon name={effortOpen ? "chevron-up" : "chevron-down"} size={12} /></span>
+          </button>
+          {#if effortOpen}
+          <div class="mpick-menu" role="listbox" aria-label="reasoning effort">
+            <button
+              type="button"
+              role="option"
+              aria-selected={!brain.state.reasoning_effort}
+              class="mpick-opt"
+              class:sel={!brain.state.reasoning_effort}
+              onclick={() => pickEffort(null)}
+            >— default —</button>
+            {#each efforts as e (e)}
+              <button
+                type="button"
+                role="option"
+                aria-selected={brain.state.reasoning_effort === e}
+                class="mpick-opt"
+                class:sel={brain.state.reasoning_effort === e}
+                onclick={() => pickEffort(e)}
+              >{e}</button>
+            {/each}
+          </div>
+        {/if}
+      </div>
+    </div>
+    <div class="model-row">
       <span class="l">PERSONA</span>
       <div class="mpick" bind:this={ppickEl}>
         <button
@@ -406,7 +467,7 @@
     </div>
     <div class="model-row">
       <span class="l">PRESET</span>
-      <div class="mpick" bind:this={ppickEl}>
+      <div class="mpick" bind:this={presetEl}>
         <button
           type="button"
           class="mpick-btn"

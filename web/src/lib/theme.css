@@ -189,47 +189,21 @@ body {
 #app, .app-root { display: flex; width: calc(100vw / var(--scale)); height: calc(100vh / var(--scale)); }
 
 /* ---------- ambience FX (glass + background, Config → Themes) ----------
-   `glass-on` / `bgfx-on` are toggled on <html> / <body> by applyFx(). They ride
+   `glass-on` / `bgfx-wall` are toggled on <html> / <body> by applyFx(). They ride
    on top of the active scheme: the vars below are set there, the rules here only
    read them, so switching layout/theme never has to know about FX. */
 
 /* Stack the shell above the fixed ambient layer. */
 #app, .app-root { position: relative; z-index: 1; }
 
-/* Ambient background: soft accent blobs behind everything. Opacity and accent
-   colors are driven by --bgfx-* (set in JS), so the layer recolors with the
-   scheme and dims with the intensity slider. */
-body::before {
+/* Wallpaper background: fixed element behind the shell so the chrome's
+   backdrop-filter can blur it reliably. */
+body.bgfx-wall::before {
   content: "";
   position: fixed;
-  inset: -6%;
   z-index: 0;
   pointer-events: none;
-  background:
-    radial-gradient(42% 38% at 16% 12%, var(--bgfx-c1, #8bc7ff) 0%, transparent 72%),
-    radial-gradient(46% 42% at 84% 86%, var(--bgfx-c2, #5fd4ff) 0%, transparent 72%),
-    radial-gradient(28% 24% at 62% 4%, color-mix(in srgb, var(--bgfx-c1, #8bc7ff) 55%, var(--bgfx-c2, #5fd4ff)) 0%, transparent 75%);
-  opacity: 0;
-  transition: opacity 0.4s ease;
-}
-body.bgfx-on::before {
-  opacity: var(--bgfx-intensity, 0.55);
-  animation: bgdrift 34s ease-in-out infinite alternate;
-}
-@keyframes bgdrift {
-  from { transform: translate3d(0, 0, 0) scale(1); }
-  to   { transform: translate3d(-2.5%, 2%, 0) scale(1.05); }
-}
-@media (prefers-reduced-motion: reduce) {
-  body.bgfx-on::before { animation: none; }
-}
-
-/* A chosen wallpaper supersedes the blobs: the ::before layer swaps its gradient
-   for the image. It stays a fixed *element* (not `background-attachment: fixed`),
-   which is what lets the chrome's backdrop-filter blur it reliably. */
-body.bgfx-wall::before {
   opacity: 1;
-  animation: none;
   /* Oversize by 2× the wallpaper's own blur so the softened edges don't reveal
      a dark rim at the viewport boundary. */
   inset: calc(var(--bgfx-wall-blur, 0px) * -2);
@@ -262,6 +236,8 @@ label.k-btn.pri input[type="file"] { display: none; }
 .glass-on #dock,
 .glass-on #ws-bar,
 .glass-on .session-tab,
+.glass-on .cfg-tab,
+.glass-on .cfg-bar,
 .glass-on .st,
 .glass-on .panel-hdr,
 .glass-on .dock-icon,
@@ -273,34 +249,132 @@ label.k-btn.pri input[type="file"] { display: none; }
 .glass-on #ws-bar { background: color-mix(in srgb, var(--bg-2) var(--glass-keep), transparent); }
 .glass-on .session-tab { background: color-mix(in srgb, var(--surface) var(--glass-keep), transparent); }
 .glass-on .session-tab.active { background: color-mix(in srgb, var(--surface-2) var(--glass-keep), transparent); }
+.glass-on .cfg-tab { background: color-mix(in srgb, var(--surface) var(--glass-keep), transparent); }
+.glass-on .cfg-tab:hover,
+.glass-on .cfg-tab.active { background: color-mix(in srgb, var(--surface-2) var(--glass-keep), transparent); }
+.glass-on .cfg-bar { background: color-mix(in srgb, var(--surface-2) var(--glass-keep), transparent); }
 .glass-on .st { background: color-mix(in srgb, var(--surface) var(--glass-keep), transparent); }
 .glass-on .panel-hdr { background: color-mix(in srgb, var(--surface-2) var(--glass-keep), transparent); }
 .glass-on .dock-icon { background: color-mix(in srgb, var(--surface) var(--glass-keep), transparent); }
 .glass-on #composer-box { background: color-mix(in srgb, var(--bg) var(--glass-keep), transparent); }
+.glass-on ::-webkit-scrollbar-track { background: color-mix(in srgb, var(--bg-2) var(--glass-keep), transparent); }
+.glass-on ::-webkit-scrollbar-corner { background: transparent; }
 
-/* Panels & windows: message boxes, agent-state rows, the state rail, dropdowns
-   and every modal — the "windows" that used to stay opaque. */
+/* Panels & windows: agent-state rows, the state rail, dropdowns, config
+   sections and cards, sessions and logs panels, and every modal — the surfaces
+   that used to stay opaque. (Chat bubbles are handled separately below; they
+   must not filter their own text layer.) */
 .glass-on #astate,
-.glass-on .msg .box,
+.glass-on .panel,
 .glass-on .strow,
 .glass-on .sub-panel,
 .glass-on .dir-modal-panel,
 .glass-on .logs-modal-panel,
 .glass-on .about-panel,
-.glass-on .mpick-menu {
+.glass-on .mpick-menu,
+.glass-on .k-dd-pop,
+.glass-on .k-menu,
+.glass-on .cfg-sec,
+.glass-on .theme-card,
+.glass-on .color-field,
+.glass-on .cfg-mode,
+.glass-on .persona-editor,
+.glass-on .provider-card,
+.glass-on .gw-logs {
   -webkit-backdrop-filter: blur(var(--glass-panel-blur)) saturate(150%);
   backdrop-filter: blur(var(--glass-panel-blur)) saturate(150%);
 }
 .glass-on #astate { background: color-mix(in srgb, var(--bg-2) var(--glass-panel-keep), transparent); }
-.glass-on .msg .box { background: color-mix(in srgb, var(--surface) var(--glass-panel-keep), transparent); }
-.glass-on .msg.user .box { background: color-mix(in srgb, var(--bg-2) var(--glass-panel-keep), transparent); }
-.glass-on .strow { background: color-mix(in srgb, var(--surface) var(--glass-panel-keep), transparent); }
+
+/* Chat bubbles are glazed from BEHIND, by a pseudo-element, not by filtering
+   the box that holds the glyphs. `backdrop-filter` forces its element onto a
+   composited layer, and Chromium rasterises that layer once — at the unzoomed
+   scale. Under the body's fractional `zoom: var(--scale)` the text is then
+   stretched to fit, which is the "chat suddenly went blurry, a refresh fixed
+   it" bug: the re-render throws the stale layer away. Here the blur + tint ride
+   on ::after and the text keeps its own raster. `.msg` is a stacking context
+   (content-visibility implies paint containment), so z-index:-1 sits above the
+   row's own background and below the box's content; the borders are opaque, so
+   filling the padding box is pixel-identical to filling the border box. */
+.glass-on .msg .box,
+.glass-on .msg.user .box { background: transparent; }
+.glass-on .msg .box::after {
+  content: ""; position: absolute; inset: 0; z-index: -1; pointer-events: none;
+  border-radius: inherit;
+  background: color-mix(in srgb, var(--surface) var(--glass-panel-keep), transparent);
+  -webkit-backdrop-filter: blur(var(--glass-panel-blur)) saturate(150%);
+  backdrop-filter: blur(var(--glass-panel-blur)) saturate(150%);
+}
+.glass-on .msg.user .box::after { background: color-mix(in srgb, var(--bg-2) var(--glass-panel-keep), transparent); }
+.glass-on .panel,
 .glass-on .sub-panel,
 .glass-on .dir-modal-panel,
 .glass-on .logs-modal-panel,
-.glass-on .about-panel { background: color-mix(in srgb, var(--surface) var(--glass-panel-keep), transparent); }
-.glass-on .mpick-menu { background: color-mix(in srgb, var(--bg) var(--glass-panel-keep), transparent); }
+.glass-on .about-panel,
+.glass-on .cfg-sec,
+.glass-on .theme-card,
+.glass-on .provider-card { background: color-mix(in srgb, var(--surface) var(--glass-panel-keep), transparent); }
 
+.glass-on .theme-card:hover,
+.glass-on .theme-card.active,
+.glass-on tbody tr:hover,
+.glass-on .gw-log-entry:hover,
+.glass-on .gw-log-entry.gw-log-clickable:hover,
+.glass-on .cfg-row:hover,
+.glass-on .cfg-mode.on { background: color-mix(in srgb, var(--surface-2) var(--glass-panel-keep), transparent); }
+
+.glass-on .mpick-menu,
+.glass-on .k-dd-pop,
+.glass-on .k-menu { background: color-mix(in srgb, var(--surface-2) var(--glass-panel-keep), transparent); }
+
+.glass-on .color-field,
+.glass-on .cfg-mode,
+.glass-on .persona-editor,
+.glass-on .gw-logs,
+.glass-on .logs-modal-json { background: color-mix(in srgb, var(--bg) var(--glass-panel-keep), transparent); }
+
+.glass-on .cfg-sec {
+  border: 1px solid var(--border);
+  padding: 14px 16px 8px;
+  margin-bottom: 22px;
+}
+.glass-on .cfg-sec-hd {
+  border-top: none;
+  padding-top: 0;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 2px;
+}
+
+.glass-on .cfg-pane input[type=text],
+.glass-on .cfg-pane input[type=password],
+.glass-on .cfg-pane input[type=url],
+.glass-on .cfg-pane input[type=number],
+.glass-on .cfg-pane select,
+.glass-on .cfg-pane textarea,
+.glass-on .k-in,
+.glass-on .k-step {
+  background: color-mix(in srgb, var(--bg) var(--glass-panel-keep), transparent);
+}
+.glass-on .k-btn:not(.pri):not(.dgr),
+.glass-on .btn:not(.primary):not(.danger) {
+  background: color-mix(in srgb, var(--surface) var(--glass-panel-keep), transparent);
+}
+.glass-on .k-btn:not(.pri):not(.dgr):hover,
+.glass-on .btn:not(.primary):not(.danger):hover {
+  background: color-mix(in srgb, var(--surface-2) var(--glass-panel-keep), transparent);
+}
+.glass-on .view-inner select,
+.glass-on .view-inner input[type="number"],
+.glass-on .logs-filter select {
+background: color-mix(in srgb, var(--surface-2) var(--glass-panel-keep), transparent);
+}
+.glass-on .cfg-search-bar,
+.glass-on .cfg-search-results {
+background: color-mix(in srgb, var(--surface) var(--glass-panel-keep), transparent);
+-webkit-backdrop-filter: blur(var(--glass-panel-blur)) saturate(150%);
+backdrop-filter: blur(var(--glass-panel-blur)) saturate(150%);
+}
 /* ---------- left pixel dock ---------- */
 #dock {
   width: 72px; flex-shrink: 0;
@@ -625,34 +699,68 @@ label.k-btn.pri input[type="file"] { display: none; }
 .toollog.shape-note.ro { border-left-color: var(--border-strong); }
 .toollog.shape-search { border-left-color: var(--cyan); }
 
-/* reasoning = framed block, magenta "brain" accent, collapsible */
-.think { border: 2px solid var(--magenta); background: var(--bg); margin: 12px 0; max-width: 700px; cursor: pointer; opacity: 0.92; user-select: none; }
-.think .tk-head { display: flex; align-items: center; gap: 10px; padding: 6px 12px; font-family: var(--mono); font-size: 11.5px; color: var(--dim); background: var(--surface-2); border-bottom: 2px solid var(--magenta); min-width: 0; position: relative; overflow: hidden; }
-.think .tk-icon { width: 14px; justify-content: center; color: var(--magenta); flex-shrink: 0; display: inline-flex; align-items: center; }
-.think .tk-tool { color: var(--magenta); font-weight: bold; flex-shrink: 0; display: inline-flex; align-items: center; gap: 6px; }
-.think .tk-state { margin-left: auto; display: inline-flex; align-items: center; gap: 4px; font-family: var(--pixel); font-size: 12px; padding: 2px 6px; flex-shrink: 0; color: var(--faint); }
-.think .tk-body { padding: 9px 12px; font-family: var(--mono); font-size: 11.5px; color: var(--faint); font-style: italic; white-space: pre-wrap; word-break: break-word; max-height: 200px; overflow-y: auto; }
-.think.ok { border-color: var(--border-strong); }
-.think.ok .tk-head { border-bottom-color: var(--border-strong); }
-.think.ok .tk-icon { color: var(--ok); }
-
-
-/* LED glow on the live "thinking" label: dancer + word cycle magenta→cyan */
-.think.run .tk-tool { animation: led-text 1.4s linear infinite; }
-@keyframes led-text {
-  0%, 100% { color: var(--magenta); text-shadow: 0 0 6px rgba(var(--glow-mag), 0.9), 0 0 14px rgba(var(--glow-mag), 0.5); }
-  50%      { color: var(--cyan);    text-shadow: 0 0 6px rgba(var(--glow-cyan), 0.9), 0 0 14px rgba(var(--glow-cyan), 0.5); }
+/* ---------- thinking: the Ledger ----------
+   One hairline, one LED, one sweeping rail. The reasoning text is the content,
+   so it gets the column and the box gets nothing — no border, no background,
+   no glow, no ASCII mascot. It also stays off a promoted compositing layer on
+   purpose: a `both` fill or a backdrop-filter here would cost the reasoning
+   text its subpixel antialiasing under the body zoom (see the note on `.msg`).
+   The whole state is one line tall when there is nothing to read, and the
+   settled row is its own toggle. */
+.lg { border-left: 2px solid var(--border-strong); padding-left: 11px; margin: 12px 0; max-width: 700px; min-width: 0; }
+.lg-row { display: flex; align-items: center; gap: 9px; font-family: var(--pixel); font-size: 10px; letter-spacing: 2.4px; color: var(--dim); }
+.lg-led { width: 6px; height: 6px; flex: none; background: var(--cyan); box-shadow: 0 0 7px rgba(var(--glow-cyan), 0.85); animation: lgBreathe 2.2s ease-in-out infinite; }
+@keyframes lgBreathe {
+  0%, 100% { opacity: 1; box-shadow: 0 0 7px rgba(var(--glow-cyan), 0.85); }
+  50%      { opacity: .3; box-shadow: 0 0 1px rgba(var(--glow-cyan), 0.2); }
 }
+/* The right-hand slot, in the tool chip's order: duration, then the caret. One
+   wrapper holds the auto margin so the caret still sits flush right on a row
+   that has no duration to report (a legacy block, or a thought that was cut
+   short) — two auto margins would have split the gap instead. */
+.lg-tail { margin-left: auto; flex: none; display: inline-flex; align-items: center; gap: 7px; }
+.lg-meta, .lg-caret { color: var(--faint); }
+.lg-meta { letter-spacing: 1px; font-variant-numeric: tabular-nums; }
+.lg-row > .lg-meta { margin-left: auto; }
+.lg-caret { display: inline-flex; align-items: center; }
+.lg-rail { height: 1px; background: var(--border); margin-top: 7px; overflow: hidden; }
+.lg-rail i { display: block; height: 100%; width: 34%; background: linear-gradient(90deg, transparent, var(--cyan), transparent); animation: lgSweep 2.6s cubic-bezier(.5, 0, .5, 1) infinite; }
+@keyframes lgSweep { from { transform: translateX(-100%); } to { transform: translateX(320%); } }
+.lg-body { font-family: var(--mono); font-size: 11.5px; line-height: 1.62; color: var(--dim); white-space: pre-wrap; word-break: break-word; margin-top: 8px; max-height: 200px; overflow-y: auto; min-width: 0; }
+/* Only the growing row shows the rail, and its tail fades out rather than
+   being cut, so it reads as still arriving. Both hang off `.lg.live` so the
+   markup stays one unconditional branch — a `{#if live}` here would sit in
+   front of the draft text step's own `live` branch, which the transcript perf
+   check locates by that exact string. */
+.lg:not(.live) .lg-rail { display: none; }
+.lg.live .lg-body { -webkit-mask-image: linear-gradient(#000 55%, transparent); mask-image: linear-gradient(#000 55%, transparent); }
+.lg.done { cursor: pointer; user-select: none; }
+.lg.done .lg-led { background: var(--ok); box-shadow: 0 0 6px rgba(var(--glow-ok), 0.5); animation: none; }
+.lg.done:hover .lg-row { color: var(--text); }
+.lg.done:hover .lg-meta, .lg.done:hover .lg-caret { color: var(--dim); }
+.lg.done:focus-visible { outline: 2px solid var(--magenta); outline-offset: 2px; }
+
+/* Loop guard row: the reminder the model itself received, kept in the window.
+   Amber flag, mono chip family, escalates once louder than the nudge. */
+.guard-note { display: flex; align-items: baseline; gap: 8px; margin: 10px 0; padding: 6px 10px;
+  border: 1px solid var(--amber); border-left-width: 3px; background: color-mix(in srgb, var(--amber) 8%, transparent);
+  min-width: 0; }
+.guard-note .gn-flag { font-family: var(--mono); font-size: 10px; letter-spacing: 0.6px; text-transform: uppercase;
+  color: var(--amber); flex: none; }
+.guard-note .gn-text { font-family: var(--mono); font-size: 11.5px; color: var(--dim); min-width: 0; }
+.guard-note.hot { border-color: var(--danger); background: color-mix(in srgb, var(--danger) 8%, transparent); }
+.guard-note.hot .gn-flag { color: var(--danger); }
 
 /* breathing room between a framed block and adjacent prose */
-.msg .toollog + .text.md, .msg .think + .text.md, .msg .err-block + .text.md { margin-top: 12px; }
-.msg .text.md + .toollog, .msg .text.md + .think, .msg .text.md + .err-block { margin-top: 12px; }
-/* streaming idle + retry notice: no glyph animation — LED glow on the text */
-.stream-idle { color: var(--faint); animation: led-text 1.8s linear infinite; }
+.msg .toollog + .text.md, .msg .lg + .text.md, .msg .err-block + .text.md { margin-top: 12px; }
+.msg .text.md + .toollog, .msg .text.md + .lg, .msg .text.md + .err-block { margin-top: 12px; }
+/* Streaming idle + retry notice: quiet colour, no glow. The thinking state is
+   the Ledger row's job now; these two only say what it is waiting on. */
+.stream-idle { color: var(--dim); }
 .idle-dot { display: inline-block; width: 9px; height: 9px; margin-right: 8px; border-radius: 50%; background: var(--ok); vertical-align: baseline; box-shadow: 0 0 6px rgba(var(--glow-ok), 0.9); animation: idle-blink 1.4s ease-in-out infinite; }
 @keyframes idle-blink { 0%, 100% { opacity: 1; box-shadow: 0 0 8px rgba(var(--glow-ok), 0.95); } 50% { opacity: .35; box-shadow: 0 0 3px rgba(var(--glow-ok), 0.4); } }
 .spin { color: var(--cyan); display: inline-block; width: 14px; }
-.turn-notice { font-family: var(--mono); font-size: 11px; margin: 8px 0; animation: led-text 1.8s linear infinite; }
+.turn-notice { font-family: var(--mono); font-size: 11px; margin: 8px 0; color: var(--amber); }
 
 /* approval = game dialogue box */
 .approval {
@@ -838,6 +946,13 @@ label.k-btn.pri input[type="file"] { display: none; }
   display: flex; align-items: center; gap: 12px;
   box-shadow: var(--shadow);
 }
+/* The input itself is borderless (see #composer-input), so its own :focus is
+   invisible — the reachable signal is the box around it. Static colour + glow,
+   no transition, so prefers-reduced-motion needs no exception. */
+#composer-box:focus-within {
+  border-color: var(--magenta);
+  box-shadow: var(--shadow), 0 0 0 2px color-mix(in srgb, var(--magenta) 35%, transparent);
+}
 #composer-box .prompt { font-family: var(--pixel); font-size: 14px; color: var(--magenta); }
 #composer-box .prompt::after {
   content: ''; display: inline-block; width: 7px; height: 13px; margin-left: 4px;
@@ -963,7 +1078,7 @@ label.k-btn.pri input[type="file"] { display: none; }
 }
 .cd-btn:hover { color: var(--magenta); border-color: var(--magenta); }
 .dir-modal { position: fixed; inset: 0; background: rgba(5,3,12,0.72); display: flex; align-items: center; justify-content: center; z-index: 90; }
-.dir-modal-panel { width: min(460px, 92vw); max-height: 72vh; display: flex; flex-direction: column; background: var(--surface); border: 2px solid var(--border-strong); clip-path: polygon(0 0, calc(100% - 16px) 0, 100% 16px, 100% 100%, 0 100%); filter: drop-shadow(4px 4px 0 rgba(0,0,0,0.5)); font-family: var(--mono); }
+.dir-modal-panel { width: min(calc(460px / var(--scale, 1)), 92%); max-height: 72%; display: flex; flex-direction: column; background: var(--surface); border: 2px solid var(--border-strong); clip-path: polygon(0 0, calc(100% - 16px) 0, 100% 16px, 100% 100%, 0 100%); filter: drop-shadow(4px 4px 0 rgba(0,0,0,0.5)); font-family: var(--mono); }
 .dir-head { display: flex; align-items: center; justify-content: space-between; padding: 10px 14px; border-bottom: 2px solid var(--border-strong); font-family: var(--pixel); font-size: 11px; color: var(--cyan); }
 .dir-close { display: grid; place-items: center; background: none; border: none; color: var(--faint); cursor: pointer; }
 .dir-close:hover { color: var(--magenta); }
@@ -1175,7 +1290,7 @@ label.k-btn.pri input[type="file"] { display: none; }
   .gw-log-chevron { grid-column: 4; }
 }
 .logs-modal-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,0.65); display: flex; align-items: center; justify-content: center; z-index: 1000; padding: 24px; }
-.logs-modal-panel { background: var(--surface); border: 2px solid var(--border-strong); box-shadow: 6px 6px 0 rgba(0,0,0,0.55); width: min(820px, 96vw); max-height: 86vh; display: flex; flex-direction: column; font-family: var(--mono); }
+.logs-modal-panel { background: var(--surface); border: 2px solid var(--border-strong); box-shadow: 6px 6px 0 rgba(0,0,0,0.55); width: min(calc(820px / var(--scale, 1)), 96%); max-height: 86%; display: flex; flex-direction: column; font-family: var(--mono); }
 .logs-modal-head { display: flex; justify-content: space-between; gap: 16px; padding: 14px 18px; border-bottom: 1px solid var(--border); }
 .logs-modal-title { color: var(--cyan); font-size: 12px; text-transform: uppercase; margin-bottom: 6px; }
 .logs-modal-sub { display: flex; align-items: center; gap: 10px; font-size: 10.5px; color: var(--faint); margin-bottom: 6px; }
@@ -1187,14 +1302,156 @@ label.k-btn.pri input[type="file"] { display: none; }
 .logs-modal-btn:hover { border-color: var(--magenta); }
 .logs-modal-close { display: grid; place-items: center; line-height: 1; padding: 2px 8px; }
 .logs-modal-json { margin: 0; padding: 14px 18px; overflow: auto; flex: 1; color: var(--text); font-size: 11.5px; line-height: 1.5; background: var(--bg); white-space: pre; }
+/* config search box */
+.cfg-search-wrap {
+position: relative;
+max-width: var(--cfg-w);
+margin: 0 auto 12px;
+}
+.cfg-search-bar {
+display: flex;
+align-items: center;
+gap: 8px;
+width: 280px;
+max-width: 100%;
+height: 32px;
+background: var(--surface);
+border: 1px solid var(--border-strong);
+padding: 0 10px;
+color: var(--dim);
+}
+.cfg-search-bar:focus-within {
+border-color: var(--magenta);
+color: var(--text);
+box-shadow: 0 0 6px rgba(var(--glow-mag), 0.35);
+}
+.cfg-search-input {
+flex: 1;
+min-width: 0;
+background: transparent;
+border: none;
+outline: none;
+color: var(--text);
+font-family: var(--crt);
+font-size: 13px;
+height: 100%;
+}
+.cfg-search-input::placeholder {
+color: var(--faint);
+font-family: var(--crt);
+}
+.cfg-search-clear {
+background: transparent;
+border: none;
+color: var(--faint);
+cursor: pointer;
+display: grid;
+place-items: center;
+padding: 2px;
+}
+.cfg-search-clear:hover {
+color: var(--text);
+}
+.cfg-search-results {
+position: absolute;
+top: calc(100% + 4px);
+left: 0;
+width: min(500px, calc(100vw - 32px));
+max-height: 320px;
+z-index: 95;
+background: var(--surface-2);
+border: 1px solid var(--border-strong);
+box-shadow: 0 8px 24px rgba(0, 0, 0, 0.55);
+overflow-y: auto;
+display: flex;
+flex-direction: column;
+}
+.cfg-search-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  font-family: var(--pixel);
+  font-size: 10px;
+  color: var(--faint);
+  border-bottom: 1px solid var(--border);
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+}
+.cfg-search-head .hint {
+  font-family: var(--crt);
+  font-size: 11px;
+  color: var(--dim);
+  text-transform: none;
+}
+.cfg-search-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 12px;
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid var(--border);
+  text-align: left;
+  cursor: pointer;
+  color: var(--text);
+  font-family: var(--crt);
+  font-size: 13px;
+  width: 100%;
+}
+.cfg-search-item:last-child {
+  border-bottom: none;
+}
+.cfg-search-item:hover {
+  background: var(--surface-3);
+}
+.cfg-search-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-family: var(--pixel);
+  font-size: 10px;
+  color: var(--magenta);
+  border: 1px solid var(--magenta);
+  padding: 2px 6px;
+  text-transform: uppercase;
+  flex-shrink: 0;
+}
+.cfg-search-info {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.cfg-search-title {
+  font-weight: 600;
+  color: var(--cyan);
+  font-size: 12.5px;
+}
+.cfg-search-desc {
+  color: var(--faint);
+  font-size: 11.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cfg-search-empty {
+  padding: 14px 12px;
+  color: var(--faint);
+  font-size: 12.5px;
+  text-align: center;
+}
 
 /* config module tabs — one strip above the panes, wraps instead of scrolling */
 .cfg-tabs { display: flex; flex-wrap: wrap; gap: 6px; max-width: var(--cfg-w); margin-inline: auto; border-bottom: 2px solid var(--border); padding-bottom: 8px; }
 .cfg-tab { display: flex; align-items: center; gap: 7px; background: var(--surface); color: var(--dim); border: 2px solid var(--border); clip-path: polygon(0 0, calc(100% - 10px) 0, 100% 10px, 100% 100%, 0 100%); padding: 7px 11px; font-family: var(--crt); font-size: 14px; line-height: 1; cursor: pointer; }
 .cfg-tab:hover { border-color: var(--border-strong); color: var(--text); }
 .cfg-tab.active { background: var(--surface-2); border-color: var(--magenta); color: var(--text); box-shadow: inset 0 -3px 0 var(--magenta); }
+.cfg-tab.dimmed { opacity: 0.45; }
 .cfg-tab .stamp { font-family: var(--pixel); font-size: 9px; color: var(--faint); border: 1px solid var(--border-strong); padding: 2px 4px; }
 .cfg-tab.active .stamp { color: var(--magenta); border-color: var(--magenta); }
+.cfg-tab .stamp.search-hit { color: var(--cyan); border-color: var(--cyan); font-weight: 600; }
 .cfg-tabnote { max-width: var(--cfg-w); margin: 9px auto 16px; font-family: var(--crt); font-size: 12.5px; color: var(--faint); }
 /* themes picker (Config → Themes): color scheme cards */
 .theme-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 16px; margin-top: 14px; }
@@ -1227,11 +1484,11 @@ label.k-btn.pri input[type="file"] { display: none; }
 .cfg-pane.active { display: block; max-width: var(--cfg-w); margin-inline: auto; }
 
 .cfg-sec { margin-bottom: 26px; }
-.cfg-sec-hd { display: flex; align-items: baseline; gap: 12px; border-top: 2px solid var(--border-strong); padding-top: 8px; margin-bottom: 2px; }
+.cfg-sec-hd { display: flex; align-items: center; gap: 12px; border-top: 2px solid var(--border-strong); padding-top: 14px; padding-bottom: 8px; margin-bottom: 4px; }
+.cfg-sec:first-child .cfg-sec-hd { border-top: none; padding-top: 4px; }
 .cfg-sec-hd .t { font-family: var(--pixel); font-size: 11.5px; letter-spacing: 1.3px; text-transform: uppercase; color: var(--text); }
 .cfg-sec-hd .d { font-family: var(--crt); font-size: 11.5px; color: var(--faint); }
 .cfg-sec-hd .sp { flex: 1; }
-
 .cfg-row { display: grid; grid-template-columns: minmax(0, 1fr) var(--cfg-ctl, 340px); gap: 24px; align-items: center;
   padding: 11px 12px 11px 10px; border-bottom: 1px solid var(--border); border-left: 2px solid transparent; font-size: 15px; }
 .cfg-row:hover { background: var(--surface); }
@@ -1263,14 +1520,13 @@ label.k-btn.pri input[type="file"] { display: none; }
 
 /* The commit bar. Sticky at the head of the pane, silent until something is
    staged — nothing has been written to the brain while it is showing. */
-.cfg-bar { position: sticky; top: 0; z-index: 60; display: flex; align-items: center; gap: 12px; margin-bottom: 8px;
+.cfg-bar { position: sticky; top: 0; z-index: 70; display: flex; align-items: center; gap: 12px; margin-bottom: 8px;
   background: var(--surface-2); border: 1px solid var(--border-strong); border-top: 0;
-  box-shadow: 0 3px 0 rgba(0, 0, 0, .35); padding: 9px 13px; }
+  box-shadow: 0 4px 14px rgba(0, 0, 0, .45); padding: 9px 13px; }
 .cfg-bar .st { font-family: var(--crt); font-size: 12px; color: var(--faint); }
 .cfg-bar.on .st { color: var(--amber); }
 .cfg-bar.err .st { color: var(--danger); }
 .cfg-bar .sp { flex: 1; }
-
 /* ===== control kit =====
    One button, one field, one stepper, one segment, one dropdown, one chip.
    Config used five dialects of each before this. */
@@ -1418,11 +1674,10 @@ select option { background: var(--surface); color: var(--text); font-family: var
 .mem-blob { width: 100%; font-size: 13px; line-height: 1.55; font-family: var(--mono); resize: vertical; }
 .mem-add { display: flex; align-items: flex-end; gap: 8px; margin-top: 14px; }
 .mem-add textarea { flex: 1; font-size: 13px; line-height: 1.4; resize: vertical; }
--/* MEMORY pane: entries read as one document in a single box — the row
--   separators divide entries; the editors themselves are borderless. */
--.mem-list { border: 1px solid var(--border-strong); border-radius: 10px; overflow: hidden; }
--.mem-list .mem-row textarea { border: 0; background: transparent; padding: 0 0 0 2px; }
--.mem-list .mem-row:hover, .mem-list .mem-row:focus-within { background: var(--surface); }
+/* MEMORY pane: entries read as one document in a single box — the row
+   separators divide entries; the editors themselves are borderless. */
+.mem-list { border: 1px solid var(--border-strong); border-radius: 10px; overflow: hidden; }
+.mem-list .mem-row textarea { border: 0; background: transparent; padding: 0 0 0 2px; }
 .mem-list .mem-row:hover, .mem-list .mem-row:focus-within { background: var(--surface); }
 .btn.danger.confirm { color: var(--amber); border-color: var(--amber); }
 .btn.danger.confirm:hover { background: var(--amber); color: var(--bg); }
@@ -1475,7 +1730,13 @@ td .t { color: var(--text); }
   .st .sq.ok { animation: breathe 2.4s ease-in-out infinite; }
   @keyframes blinker { to { visibility: hidden; } }
   @keyframes rise { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
-  .msg, .sub-section { animation: rise .35s ease both; }
+  /* `backwards`, never `both`: a forwards fill keeps the last keyframe applied
+     forever, so every message row would carry a permanent transform — a
+     permanently promoted compositing layer. Under the body's fractional
+     `zoom: var(--scale)` that layer can be rasterised at the unzoomed scale,
+     which is the "text suddenly went blurry until I refresh" bug. The end
+     state here IS the natural state, so the fill bought nothing anyway. */
+  .msg, .sub-section { animation: rise .35s ease backwards; }
   .cu-bar { position: relative; overflow: hidden; }
   .cu-bar::after { content: ''; position: absolute; inset: 0; background: linear-gradient(90deg, transparent, rgba(255,255,255,0.10), transparent); transform: translateX(-100%); animation: sweep 4.2s ease-in-out infinite; }
   @keyframes sweep { 0% { transform: translateX(-100%); } 35% { transform: translateX(100%); } 100% { transform: translateX(100%); } }
@@ -1493,7 +1754,7 @@ td .t { color: var(--text); }
   @keyframes scanline { 0% { transform: translateX(-100%); } 100% { transform: translateX(100%); } }
   .toollog.run .tl-state { animation: amberblink 1s steps(2, start) infinite; }
   /* tool chips pop in */
-  .toolrow { animation: rise .3s ease both; }
+  .toolrow { animation: rise .3s ease backwards; }
   /* send button glows when armed */
   #send-btn:not(:disabled) { animation: sendglow 2.2s ease-in-out infinite; }
   @keyframes sendglow { 0%, 100% { box-shadow: 3px 3px 0 rgba(0,0,0,0.5); } 50% { box-shadow: 0 0 14px rgba(var(--glow-mag), 0.7), 3px 3px 0 rgba(0,0,0,0.5); } }
@@ -1507,7 +1768,7 @@ td .t { color: var(--text); }
   /* ---- todo badge ---- */
   /* The count remounts on every completion ({#key todoDone}), so this plays
      once per finished task: a small pop that registers progress. */
-  .todo-count { animation: todopop .34s cubic-bezier(.34, 1.56, .64, 1) both; }
+  .todo-count { animation: todopop .34s cubic-bezier(.34, 1.56, .64, 1) backwards; }
   @keyframes todopop {
     0%   { transform: scale(1); }
     40%  { transform: scale(1.28); color: var(--ok); }
@@ -1523,7 +1784,7 @@ td .t { color: var(--text); }
   }
   /* Completion wipes the strike-through across instead of snapping it on. */
   .todo-row.done .todo-txt, .todo-row.dropped .todo-txt {
-    animation: todostrike .32s ease both;
+    animation: todostrike .32s ease backwards;
   }
   @keyframes todostrike { from { background-size: 0 1px; } to { background-size: 100% 1px; } }
 }
@@ -1539,7 +1800,7 @@ td .t { color: var(--text); }
 }
 .about-panel {
   position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); z-index: 1001;
-  width: min(460px, 92vw); max-height: 88vh; overflow: auto;
+  width: min(calc(460px / var(--scale, 1)), 92%); max-height: 88%; overflow: auto;
   background: var(--surface); border: 2px solid var(--border-strong);
   box-shadow: 6px 6px 0 rgba(0,0,0,0.55);
   font-family: var(--mono); color: var(--text);
@@ -1570,7 +1831,10 @@ td .t { color: var(--text); }
 .about-body p { margin: 0 0 10px; }
 .about-body b { color: var(--text); }
 .about-body code { color: var(--cyan); font-size: 10.5px; }
-.about-actions { display: flex; flex-wrap: wrap; gap: 8px; border-top: 1px solid var(--border); padding-top: 12px; }
+.about-actions {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
+  border-top: 1px solid var(--border); padding-top: 12px;
+}
 .about-file { display: none; }
 .about-btn {
   background: var(--surface-2); color: var(--text);
@@ -1578,7 +1842,23 @@ td .t { color: var(--text); }
   font-family: var(--mono); font-size: 11px; cursor: pointer;
 }
 .about-btn:hover { border-color: var(--magenta); }
+.about-btn:disabled { opacity: 0.55; cursor: default; }
+.about-btn:disabled:hover { border-color: var(--border-strong); }
 .about-btn-primary { background: var(--magenta); color: #14030f; border-color: var(--magenta); font-weight: bold; }
+/* Harness power (restart / shut down) — icon-only, pushed to the right end of
+   the same row as the avatar actions. `flex-shrink: 0` keeps the glyphs from
+   being squeezed; the label lives in the button's title/aria-label. */
+.about-power {
+  display: flex; align-items: center; gap: 6px;
+  margin-left: auto; flex-shrink: 0;
+}
+.about-power-btn {
+  display: inline-flex; align-items: center; justify-content: center;
+  padding: 6px 8px; line-height: 1;
+}
+.about-btn-danger { border-color: var(--danger); color: var(--danger); }
+.about-btn-danger:hover { background: var(--danger); border-color: var(--danger); color: #14030f; }
+.about-power-note { font-size: 10.5px; color: var(--dim); margin-top: 8px; }
 
 /* provider enable toggle + qualified model picker */
 .prov-en { position: relative; width: 34px; height: 18px; flex-shrink: 0; cursor: pointer; display: inline-block; }
@@ -1609,6 +1889,9 @@ td .t { color: var(--text); }
 .preset-section h4 { margin: 0 0 8px; font-size: 11px; letter-spacing: 1px; color: var(--cyan); font-family: var(--pixel); }
 .preset-sec-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
 .preset-sec-head h4 { margin: 0; }
+.preset-footer { display: flex; align-items: center; gap: 12px; margin-top: 20px; padding-top: 14px; border-top: 1px solid var(--border); }
+.preset-footer .st { font-family: var(--crt); font-size: 12px; color: var(--amber); }
+.preset-footer .sp { flex: 1; }
 .option-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 4px 12px; }
 .chk { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--text); cursor: pointer; line-height: 1.2; }
 .chk input { position: absolute; opacity: 0; width: 0; height: 0; }
@@ -1639,11 +1922,19 @@ td .t { color: var(--text); }
 .lightbox-cap { font-family: var(--mono); font-size: 11px; color: var(--dim); max-width: 80vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* image buttons that open the lightbox */
-.att-thumb-btn, .tl-img-btn { padding: 0; border: none; background: none; cursor: zoom-in; line-height: 0; }
-.att-thumb-btn:focus-visible, .tl-img-btn:focus-visible { outline: 1px solid var(--magenta); outline-offset: 1px; }
-.tl-img-btn { max-width: 100%; }
+/* Sub-agent activity dialog (SubRunModal). Caps are %-of-overlay + px/`--scale`:
+   the app puts `zoom: var(--scale)` on <body>, and a zoomed body becomes the
+   containing block for its fixed descendants. `inset: 0` still equals the
+   viewport exactly (that is how the backdrop stays edge-to-edge), but raw px
+   and viewport units *inside* resolve zoom-multiplied — 760px paints 869,
+   80vh paints 91.5vh and 94vw paints 107vw (a sheet wider than the screen on
+   narrow windows). A % of the overlay telescopes to % of the *visible* viewport;
+   the absolute-wish term is divided by the scale token, so the dialog keeps its
+   designed visual size at every scale and the phone pass (--scale: 1) is a
+   byte-for-byte no-op. Same treatment: .dir-modal-panel below, .logs-modal-panel
+   and .about-panel above. */
 .sub-panel {
-  width: min(760px, 94vw); max-height: 80vh; display: flex; flex-direction: column;
+  width: min(calc(760px / var(--scale, 1)), 94%); max-height: 80%; display: flex; flex-direction: column;
   background: var(--surface); border: 2px solid var(--border-strong);
   clip-path: polygon(0 0, calc(100% - 16px) 0, 100% 16px, 100% 100%, 0 100%);
   filter: drop-shadow(4px 4px 0 rgba(0,0,0,0.5)); font-family: var(--mono);
@@ -1710,12 +2001,13 @@ td .t { color: var(--text); }
 .queued-tag { color: var(--amber, #ffd27c); font-weight: 700; font-size: 10px; letter-spacing: 2px; flex: none; }
 .queued-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .queued-thumb { width: 28px; height: 28px; object-fit: cover; border: 1px solid var(--border-strong, #2a3854); flex: none; }
-.queued-steer { flex: none; margin-left: auto; display: grid; place-items: center; border: 0; background: transparent; color: var(--faint, #6f5f96); line-height: 1; padding: 2px 5px; cursor: pointer; }
-.queued-steer:hover:not(:disabled) { color: var(--magenta, #e56ac1); }
-.queued-steer:disabled { opacity: .4; cursor: default; }
-.queued-x { flex: none; margin-left: auto; display: grid; place-items: center; border: 0; background: transparent; color: var(--faint, #6f5f96); line-height: 1; padding: 2px 5px; cursor: pointer; }
-.queued-x:hover:not(:disabled) { color: var(--danger, #ff5c6c); }
-.queued-x:disabled { opacity: .4; cursor: default; }
+/* per-row actions — edit / send now / remove. One base, one colour per intent. */
+.queued-acts { flex: none; margin-left: auto; display: flex; align-items: center; gap: 2px; }
+.queued-act { display: grid; place-items: center; border: 0; background: transparent; color: var(--faint, #6f5f96); line-height: 1; padding: 2px 5px; cursor: pointer; }
+.queued-act:disabled { opacity: .4; cursor: default; }
+.queued-act.is-edit:hover:not(:disabled) { color: var(--cyan, #5fd4ff); }
+.queued-act.is-send:hover:not(:disabled) { color: var(--magenta, #e56ac1); }
+.queued-act.is-x:hover:not(:disabled) { color: var(--danger, #ff5c6c); }
 
 
 /* ---------- toasts ----------
@@ -1735,7 +2027,177 @@ td .t { color: var(--text); }
   color: var(--text); font-family: var(--mono); font-size: 12px;
   padding: 8px 14px; box-shadow: 3px 3px 0 rgba(0, 0, 0, .45);
   max-width: min(420px, 86vw); text-align: center;
-  animation: toast-in .18s ease-out both;
+  animation: toast-in .18s ease-out backwards;
 }
 @keyframes toast-in { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
 @media (prefers-reduced-motion: reduce) { .toast { animation: none; } }
+
+/* ==========================================================================
+   MOBILE — the default layout's phone pass
+   ==========================================================================
+   The shell is built for a desk: a 72px pixel dock, a chat column, and a 300px
+   state rail, all in one flex row, at a `zoom` density tuned for a monitor. On
+   a 390px screen that row is physically impossible, so the same parts re-fold:
+   the rail becomes an overlay drawer (see #astate-toggle in the default
+   Layout.svelte) and the dock becomes a bottom tab bar.
+
+   Two axes, deliberately separate:
+   - `pointer: coarse`  → touch *ergonomics* (type size, focus zoom, tap
+     highlight, hover-only affordances). A tablet is coarse and narrow-ish; a
+     desktop window resized to 400px is still a mouse.
+   - `max-width`        → *layout* reflow, which is right wherever the window
+     is genuinely narrow, phone or not.
+
+   Everything here is additive and last in the cascade: the desktop rules above
+   stay untouched, so this section can be deleted wholesale to revert.
+   -------------------------------------------------------------------------- */
+
+/* ---------- height: the viewport that is actually visible ----------
+   `--kb` (lib/keyboard.ts) is `innerHeight − visualViewport.height − offsetTop`
+   — everything the browser is hiding at the bottom: the collapsing URL bar AND
+   the on-screen keyboard. The layout viewport never shrinks for either, and
+   `body { overflow: hidden }` stops the browser scrolling past them, so without
+   this the composer sits under the keyboard.
+
+   Do NOT "improve" this to `100dvh`. dvh already *is* the visible box, so
+   `calc(100dvh - var(--kb))` subtracts the same chrome twice:
+   vv.height − (innerHeight − vv.height). iPhone 844/700 → 556px of shell; with
+   the keyboard up (vv≈430) → a 16px chat that shows nothing but the input.
+   `100vh` is the layout viewport the inset is measured against, so it subtracts
+   exactly once. Dividing by `--scale` matches the base rule's zoom compensation. */
+#app, .app-root { height: calc((100vh - var(--kb, 0px)) / var(--scale)); }
+
+/* ---------- touch ergonomics ---------- */
+@media (pointer: coarse) {
+  /* The desktop `--scale: 1.144` exists to make a monitor-dense UI readable.
+     A phone is already at arm's length: 1 CSS px ≈ 1 physical px, so the phone
+     wants scale 1 — and, crucially, a control's font size to be *honestly*
+     ≥16px, because iOS Safari auto-zooms the page when you focus a smaller
+     input and does not always honour an ancestor `zoom` in that test. It then
+     never zooms back out, which is how a chat app ends up permanently
+     half-off-screen. So: drop the zoom, size the type directly. */
+  :root { --scale: 1; }
+
+  html { -webkit-text-size-adjust: 100%; }
+  body { font-size: 14px; -webkit-tap-highlight-color: transparent; }
+
+  /* Every focusable control at ≥16px — the anti-auto-zoom floor. */
+  input, select, textarea, #composer-input { font-size: 16px; }
+  /* Two lines reserved, not one: the desktop hint that used to fill the box is
+     deliberately gone on touch (Composer.svelte), and 22px of target is small
+     for a thumb. Auto-grow still takes it from there. */
+  #composer-input { min-height: 2.8em; }
+  /* Reading text, bumped to phone size. */
+  .msg .text { font-size: 16px; line-height: 1.6; overflow-wrap: anywhere; }
+  .msg .text code { font-size: 14px; }
+  .msg .box pre { font-size: 13px; }
+
+  /* No 300ms double-tap-to-zoom on anything you tap. */
+  button, a, label, summary, .session-tab, .dock-icon { touch-action: manipulation; }
+
+  /* Hover is not a state you can enter with a finger. The copy affordance was
+     `opacity: 0` until `:hover`, i.e. invisible forever on a phone; a sticky
+     `:hover` after tap is the other failure mode, so pin the value outright. */
+  .copy { opacity: .8; }
+  .msg .box:hover .copy { opacity: .8; }
+  .dock-icon .tip { display: none; }
+}
+
+/* ---------- ≤1080px: the state rail becomes a drawer ----------
+   300px of a 1024px window is already crowding the chat's measure; of a phone
+   it *is* the screen. Out of the flex row and over the top of it.
+   `width`, not `flex-basis`: an absolutely positioned box is out of flow and is
+   not a flex item, so flex-basis is ignored and the width would fall back to
+   shrink-to-fit — which tracks content, so switching to a populated tab widens
+   the drawer mid-animation. (Same trap simple.css documents for its rail.)
+   `overflow: hidden` on the row is what keeps the off-canvas drawer from
+   widening the document: a translated element still counts toward scrollWidth,
+   so without it a phone gets a 320px sideways pan into the void. */
+#astate-toggle { display: none; }
+.astate-backdrop { display: none; }
+
+@media (max-width: 1080px) {
+  #ws-row { position: relative; overflow: hidden; }
+  /* `.app-root` is load-bearing, not decoration: theme.css is shared by every
+     layout, and `#astate` is the AgentState *component's* root — the default
+     layout uses it AS the rail, while simple nests it inside `.simple-rail`.
+     Unscoped, this rule turned simple's drawer into a drawer inside a drawer and
+     translated the content out of its own panel: an empty rail. Scope every
+     `#astate` rule in this section to the layout that owns it. */
+  .app-root #astate {
+    position: absolute; inset: 0 0 0 auto; z-index: 40;
+    width: min(320px, 88%); flex-basis: auto;
+    transform: translateX(100%);
+    transition: transform .2s ease-out;
+    box-shadow: -18px 0 40px rgb(0 0 0 / 38%);
+  }
+  .app-root .astate-open #astate { transform: none; }
+  .astate-open .astate-backdrop { display: block; }
+  #astate-toggle {
+    display: inline-flex; align-items: center; gap: 6px;
+    position: sticky; right: 6px; margin-left: auto; flex-shrink: 0;
+    min-height: 32px; padding: 0 10px;
+    background: var(--surface); border: 2px solid var(--border);
+    color: var(--dim); font-family: var(--pixel); font-size: 12px; letter-spacing: 1px;
+    cursor: pointer;
+  }
+  #astate-toggle.active { border-color: var(--magenta); color: var(--magenta); background: var(--surface-2); }
+}
+
+.astate-backdrop {
+  position: absolute; inset: 0; z-index: 39;
+  border: 0; background: rgba(6, 3, 14, .55); cursor: pointer;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .app-root #astate { transition: none; }
+}
+
+/* ---------- ≤760px: the dock becomes a bottom tab bar ----------
+   A 72px column is 18% of the screen forever, and its icons live on the thumb
+   the user cannot reach. A bottom row keeps the 44px targets (they already are
+   44px) and hands the whole width to the chat. */
+@media (max-width: 760px) {
+  #app, .app-root { flex-direction: column; }
+  #main { order: 1; min-height: 0; }
+  #dock {
+    order: 2; width: 100%;
+    flex-direction: row; justify-content: space-evenly; align-items: center;
+    gap: 4px; padding: 6px 6px calc(6px + env(safe-area-inset-bottom));
+    border-right: 0; border-top: 2px solid var(--border);
+  }
+  .brand-mark { display: none; }        /* the version string in #ws-bar says it */
+  .dock-icon { width: 48px; height: 48px; }
+  .dock-icon svg { width: 24px; height: 24px; }
+  .dock-icon.active::before { display: none; }  /* ▸ points at a column, not a row */
+
+  #ws-bar { padding: 8px 14px; gap: 8px 10px; }
+  #session-tabs { padding: 6px 12px; gap: 5px; -webkit-overflow-scrolling: touch; }
+  .session-tab-name { max-width: 44vw; min-height: 38px; }
+  .session-tab-close { width: 34px; min-height: 38px; }
+  .session-tab-add { width: 38px; min-height: 38px; }
+
+  #messages { padding: 14px 12px 6px; overscroll-behavior: contain; }
+  .msg.user { max-width: 100%; }        /* 760px cap on a 390px screen does nothing */
+  .msg .box { padding: 10px 12px; }
+
+  #composer { padding: 8px 12px calc(10px + env(safe-area-inset-bottom)); }
+  #composer-box { padding: 10px 12px; gap: 8px; }
+  /* The context/token meter is a second row under the input on a phone, and it
+     is a duplicate: the same CONTEXT bar is in the state drawer. `#composer`
+     prefixed because the scoped rule in Composer.svelte compiles to
+     `.context-metrics.svelte-xxx` and would otherwise out-specify this. */
+  #composer .context-metrics { display: none; }
+  /* The decorative `>_` is the pixel-font flourish it is on a monitor; here it
+     costs the input 22px of a 207px measure. Drop it — type width wins. */
+  #composer-box .prompt { display: none; }
+  #send-btn { width: 44px; height: 44px; }
+
+  /* Floats above the composer as a HUD; with the drawer now at z 40 it can no
+     longer land on top of the rail, and 12px keeps it off the safe-area edge. */
+  #todo-strip { right: 12px; }
+  .view-inner { padding: 18px 14px; }
+  .app-root #astate { width: min(320px, 92%); }
+  .logs-modal-panel { max-height: 92dvh; }
+  .logs-modal-backdrop { padding: 10px; }
+}

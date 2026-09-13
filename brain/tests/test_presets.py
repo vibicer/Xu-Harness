@@ -324,7 +324,22 @@ class TestPresetCreateTool:
         assert asyncio.run(preset_create.run({"tree": tree}, ctx)).error  # no name
         assert asyncio.run(preset_create.run({"name": "x", "tree": "nope"}, ctx)).error  # tree not object
         assert asyncio.run(preset_create.run({"name": "x", "tree": tree}, SimpleNamespace(presets=None))).error
-
+        # Invalid role
+        bad_role = {"role": "hacker"}
+        res = asyncio.run(preset_create.run({"name": "x", "tree": bad_role}, ctx))
+        assert res.error and "role must be" in res.output
+        # Invalid tool name / toolset
+        bad_tool = {"role": "orchestrator", "tools": ["nonexistent_xyz_tool"]}
+        res = asyncio.run(preset_create.run({"name": "x", "tree": bad_tool}, ctx))
+        assert res.error and "unknown tool or toolset" in res.output
+        # Valid tool name and valid toolset
+        good_tree = {
+            "role": "orchestrator",
+            "tools": ["web", "read"],
+            "children": [{"name": "scout", "role": "agent", "tools": ["browser", "edit"]}],
+        }
+        res = asyncio.run(preset_create.run({"name": "good", "tree": good_tree}, ctx))
+        assert not res.error, res.output
     @staticmethod
     def _tmp():
         from pathlib import Path
@@ -417,6 +432,63 @@ class TestDelegationActivity:
         assert "tool" in kinds and "reasoning" in kinds
         assert any(s.get("tool") == "glob" for s in rec["steps"])
 
+    def test_node_tools_runtime_enforcement(self):
+        import asyncio
+        import tempfile
+        from pathlib import Path
+        from types import SimpleNamespace
+        from xu_brain.core.governance import ApprovalManager
+        from xu_brain.features.tools import all_tools
+        from xu_brain.features.tools.registry import ToolRegistry
+        from xu_brain.features.tools.base import ToolContext
+
+        registry = ToolRegistry(ApprovalManager("yolo"))
+        for t in all_tools():
+            registry.register(t)
+
+        # Test schema filtering
+        schemas_all = registry.schemas_for_model()
+        all_names = {s["function"]["name"] for s in schemas_all}
+        assert "read" in all_names and "write" in all_names and "web_search" in all_names
+
+        # Filter by specific tool name
+        schemas_read_only = registry.schemas_for_model(allowed_tools=["read", "edit"])
+        names_read_only = {s["function"]["name"] for s in schemas_read_only}
+        assert names_read_only == {"read", "edit"}
+
+        # Filter by toolset name
+        schemas_web = registry.schemas_for_model(allowed_tools=["web"])
+        names_web = {s["function"]["name"] for s in schemas_web}
+        assert "web_search" in names_web and "web_extract" in names_web
+        assert "read" not in names_web
+
+        # Test execution enforcement in registry.run
+        dh = Path(tempfile.mkdtemp())
+        ctx = ToolContext(
+            data_home=dh,
+            session_id="s1",
+            turn_id="t1",
+            cwd=str(dh),
+            agent=SimpleNamespace(),
+            events=SimpleNamespace(),
+            approvals=ApprovalManager("yolo"),
+            providers=SimpleNamespace(),
+            memory=SimpleNamespace(),
+            skills=SimpleNamespace(),
+            flat_plugins=SimpleNamespace(),
+            config={"preset_node": {"name": "restricted", "tools": ["read", "web"]}},
+        )
+
+        async def dummy_emit(*_a, **_k):
+            pass
+
+        # Allowed by toolset ("web")
+        res = asyncio.run(registry.run("web_search", {"query": "test"}, ctx, emit=dummy_emit))
+        assert "not allowed by agent preset" not in res.output
+
+        # Disallowed (e.g. "write" not in ["read", "web"])
+        res = asyncio.run(registry.run("write", {"path": "a.txt", "content": "hi"}, ctx, emit=dummy_emit))
+        assert res.error and "tool not allowed by agent preset: write" in res.output
     def test_activity_empty_for_unknown_run(self):
         from types import SimpleNamespace
         from xu_brain.features.agent.loop import Agent

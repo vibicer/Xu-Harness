@@ -10,6 +10,8 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from xu_brain.core.bus import HookBus
 from xu_brain.core.host import PluginHost
 
@@ -406,3 +408,57 @@ def test_reload_rereads_source_edited_within_the_same_second(tmp_path):
     )
     assert host.reload() == 1
     assert list(app.methods) == ["swap.bbb"]
+
+
+# ---- legacy flat-file PluginBus: a bad plugin must not stop the boot ---- #
+
+
+def _flat(tmp_path: Path, name: str, body: str) -> None:
+    (tmp_path / f"{name}.py").write_text(body, "utf-8")
+
+
+def test_flat_plugin_module_level_sys_exit_is_skipped(tmp_path, caplog):
+    """Regression: ``sys.exit(3)`` at module level is ``SystemExit``, which
+    ``except Exception`` does not catch — it escaped ``load_dir`` and took
+    ``App.__init__`` (and the whole boot) down with it."""
+    from xu_brain.plugins import PluginBus
+
+    _flat(tmp_path, "quitter", "import sys\nsys.exit(3)\n")
+    _flat(tmp_path, "good", "def before_llm(m):\n    return m\n")
+
+    bus = PluginBus(tmp_path, bus=HookBus())
+    with caplog.at_level("WARNING"):
+        assert bus.load_dir(tmp_path) == 1
+    assert "good" in bus and "quitter" not in bus
+    assert "quitter" in caplog.text, "the skip must be logged"
+
+
+def test_flat_plugin_raising_getattr_is_skipped(tmp_path, caplog):
+    """Regression: hook discovery reads attributes off the module, so a PEP-562
+    ``__getattr__`` that raises blew up *outside* the old try block (which ended
+    at ``exec_module``) and escaped ``load_dir``."""
+    from xu_brain.plugins import PluginBus
+
+    _flat(
+        tmp_path, "pep562",
+        "def __getattr__(name):\n    raise RuntimeError('no attribute ' + name)\n",
+    )
+    _flat(tmp_path, "good", "def before_llm(m):\n    return m\n")
+
+    bus = PluginBus(tmp_path, bus=HookBus())
+    with caplog.at_level("WARNING"):
+        assert bus.load_dir(tmp_path) == 1
+    assert "good" in bus and "pep562" not in bus
+    assert "pep562" in caplog.text, "the skip must be logged"
+
+
+def test_flat_plugin_keyboard_interrupt_still_propagates(tmp_path):
+    """Ctrl-C must stop the brain: the broadened guard is ``(Exception,
+    SystemExit)``, never ``BaseException``."""
+    from xu_brain.plugins import PluginBus
+
+    _flat(tmp_path, "ctrl_c", "raise KeyboardInterrupt()\n")
+
+    bus = PluginBus(tmp_path, bus=HookBus())
+    with pytest.raises(KeyboardInterrupt):
+        bus.load_dir(tmp_path)

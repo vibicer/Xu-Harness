@@ -36,15 +36,10 @@ interface GlassFX {
   panelTint: number;
 }
 
-/** Ambient background FX: full-viewport gradient blobs behind the shell. */
+/** Background FX: optional wallpaper image behind the shell. */
 interface BgFX {
   enabled: boolean;
-  /** layer opacity, 0–100 (ambient-gradient fallback). */
-  intensity: number;
-  /** explicit accent hexes; empty = follow the active scheme's glow colors. */
-  c1: string;
-  c2: string;
-  /** wallpaper image as a data URL; empty = use the ambient gradient. */
+  /** wallpaper image as a data URL; empty = none. */
   wallpaper: string;
   /** blur applied to the wallpaper image itself, in px (0–20). */
   wallBlur: number;
@@ -70,7 +65,7 @@ export function AppearanceMixin<T extends Ctor<StoreCoreBase>>(Base: T) {
 *  that ride on top of whichever layout/theme is active, so they survive
 *  scheme and layout switches. */
 glass = $state<GlassFX>({ enabled: false, blur: 16, tint: 30, panelBlur: 12, panelTint: 20 });
-bgfx = $state<BgFX>({ enabled: false, intensity: 55, c1: "", c2: "", wallpaper: "", wallBlur: 0 });
+bgfx = $state<BgFX>({ enabled: false, wallpaper: "", wallBlur: 0 });
 
     /** Built-in + user presets. Plugin-contributed schemes are NOT in here: they
      *  live in `pluginThemes`, so they never reach `persistThemes` (a plugin owns
@@ -177,12 +172,6 @@ private wallpaperWritten: string | null = null;
       el.style.setProperty("--glass-panel-keep", `${100 - this.glass.panelTint}%`);
       // Wallpaper's own blur softens the image itself.
       el.style.setProperty("--bgfx-wall-blur", `${this.bgfx.wallBlur}px`);
-      // Background accents: an explicit override, else the active scheme's glow
-      // colors, so the layer recolors automatically on a theme switch.
-      const t = this.allThemes.find((x) => x.id === this.theme && (x.layout ?? "default") === this.layout);
-      el.style.setProperty("--bgfx-c1", this.bgfx.c1 || t?.colors["glow-mag"] || "#8bc7ff");
-      el.style.setProperty("--bgfx-c2", this.bgfx.c2 || t?.colors["glow-cyan"] || "#5fd4ff");
-      el.style.setProperty("--bgfx-intensity", `${this.bgfx.intensity / 100}`);
     }
 
     setGlass(patch: Partial<GlassFX>): void {
@@ -462,9 +451,6 @@ private wallpaperWritten: string | null = null;
               const wall = localStorage.getItem(this.wallpaperKey) ?? (typeof o.wallpaper === "string" ? o.wallpaper : "");
               this.bgfx = {
                 enabled: !!o.enabled,
-                intensity: clampNum(o.intensity, 0, 100, 55),
-                c1: typeof o.c1 === "string" ? o.c1 : "",
-                c2: typeof o.c2 === "string" ? o.c2 : "",
                 wallpaper: wall,
                 wallBlur: clampNum(o.wallBlur, 0, 20, 0),
               };
@@ -499,7 +485,22 @@ private wallpaperWritten: string | null = null;
               layout: t.base ?? "default",
               colors: t.tokens ?? {},
         }));
-        this.themes = [...this.themes.filter((t) => t.builtin), ...this.customThemes];
+        // Built-ins plus the user's own presets survive a refresh. The brain's
+        // custom themes are merged in, but a user preset whose id the brain also
+        // provides yields to it. `persistThemes` owns the user presets (`+ New
+        // preset` never round-trips through `layouts.list`), so dropping them
+        // here wiped the live list on every boot — and an active one left
+        // `applyAppearance`'s lookup empty, repainting no palette at all.
+        const brainThemeIds = new Set(this.customThemes.map((t) => t.id));
+        const seen = new Set<string>();
+        this.themes = [
+          ...this.themes.filter((t) => t.builtin || !brainThemeIds.has(t.id)),
+          ...this.customThemes,
+        ].filter((t) => {
+          if (seen.has(t.id)) return false;
+          seen.add(t.id);
+          return true;
+        });
         const activeLayout = this.customLayouts.find((item) => item.name === got.active?.layout);
         if (activeLayout) {
           this.activeCustomLayout = activeLayout.name;

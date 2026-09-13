@@ -41,6 +41,13 @@ _DESTRUCTIVE_SHELL = re.compile(
     r"truncate\s+-s\s*0|find\b.*\s-delete\b|git\s+clean\b[^|]*\s-f)"
 )
 _ALWAYS_DELETE_TOOLS: set[str] = set()  # empty by user preference; gate kept
+_GIT_READ_ACTIONS: frozenset[str] = frozenset({
+    "status",
+    "diff",
+    "log",
+    "show",
+    "blame",
+})
 
 # Reason string returned by ApprovalManager.request when the user did not
 # answer an approval card before the timeout: the caller should pause the turn.
@@ -151,6 +158,13 @@ class ApprovalManager:
             cmd = str(args.get("command", ""))
             if _DESTRUCTIVE_SHELL.search(cmd):
                 return True
+        if tool_name == "git":
+            action = str(args.get("action", "")).lower()
+            subaction = str(args.get("subaction") or args.get("branch_action") or "").lower()
+            if action in ("clean",) or (action == "reset" and args.get("hard")):
+                return True
+            if action == "branch" and (subaction == "delete" or args.get("delete")) and args.get("force"):
+                return True
         return False
 
     def _policy_gated(self, tool_name: str, args: dict[str, Any]) -> bool:
@@ -186,6 +200,15 @@ class ApprovalManager:
                 continue
             if level is not None:
                 return level
+        if tool_name == "git":
+            action = str(args.get("action", "")).lower()
+            subaction = str(args.get("subaction") or args.get("branch_action") or "").lower()
+            if action in _GIT_READ_ACTIONS:
+                return ApprovalLevel.NEVER
+            if action == "branch" and subaction in ("", "list") and not args.get("branch_name") and not args.get("name"):
+                return ApprovalLevel.NEVER
+            if action == "stash" and subaction in ("", "list", "show"):
+                return ApprovalLevel.NEVER
         spec = self._modes.get(self.mode)
         if spec is not None and declared is ApprovalLevel.RISKY:
             if self._mode_matches(spec.get("auto"), tool_name):

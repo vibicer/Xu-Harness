@@ -284,6 +284,64 @@ def brain_env() -> dict:
     return os.environ.copy()
 
 
+def brain_argv(web_dist: Path) -> list[str]:
+    """Argv for a brain process — shared by `cmd_start` and the supervisor."""
+    return [str(venv_python()), "-m", "xu_brain",
+            "--port", brain_port(),
+            "--data-home", str(data_home()),
+            "--web-dir", str(web_dist)]
+
+
+def watch_file() -> Path:
+    """pid file for the supervisor process that restarts a crashed brain."""
+    return data_home() / "supervisor.pid"
+
+
+def read_watch_pid() -> int | None:
+    try:
+        return int(watch_file().read_text().strip())
+    except (OSError, ValueError):
+        return None
+
+
+def cmd_supervise() -> None:
+    """Internal supervisor: keep the brain running until an intentional stop.
+
+    Until now the launcher was hands-off after `xu start`: a brain that died —
+    segfault, OOM, the WS-bind give-up — left the web ui dead until a human ran
+    `xu restart`. The supervisor closes that gap: whenever the brain exits it
+    relaunches, as long as `brain.pid` still names the launch. `xu stop` and
+    the About panel's shut-down both *unlink* that file, which is exactly how
+    this loop knows not to come back.
+    """
+    watch_file().write_text(f"{os.getpid()}\n")
+    try:
+        argv = brain_argv(REPO / "web" / "dist")
+        log = log_file()
+        while True:
+            if not pid_file().exists():
+                return  # stop was requested — stay down
+            with log.open("ab") as lf:  # `cmd_start` truncates once per start
+                proc = subprocess.Popen(
+                    argv, stdin=subprocess.DEVNULL, stdout=lf, stderr=subprocess.STDOUT,
+                    cwd=REPO, env=brain_env(), **detach_kwargs(),
+                )
+                lf.write(f"[xu] brain pid {proc.pid}\n".encode())
+                lf.flush()
+            pid_file().write_text(f"{proc.pid}\n")  # overwrites the bootstrap pid
+            while proc.poll() is None:
+                time.sleep(0.2)
+            if not pid_file().exists():
+                return  # intentional shutdown — do not resurrect
+            if process_alive(proc.pid):  # respawn raced a `xu stop` unlink
+                terminate(proc.pid, force=True)
+            print(f"[xu] brain exited rc={proc.returncode} — restarting",
+                  file=sys.stderr)
+            time.sleep(1.0)
+    finally:
+        watch_file().unlink(missing_ok=True)
+
+
 def cmd_start() -> None:
     if is_running():
         print(f"xu: already running (pid {read_pid()}) — try 'xu restart'")
@@ -299,21 +357,23 @@ def cmd_start() -> None:
     print(f"xu: starting brain on :{brain_port()} (web :{web_port()})…")
     log = log_file()
     with log.open("wb") as lf:  # bash `> "$LOG_FILE"`: truncated on every start
+        # Spawn the supervisor, not the brain: it owns brain.pid from here on
+        # and relaunches the brain whenever it dies, so `xu restart` stops
+        # being the only way to bring the harness back.
         proc = subprocess.Popen(
-            [str(venv_python()), "-m", "xu_brain",
-             "--port", brain_port(),
-             "--data-home", str(data_home()),
-             "--web-dir", str(web_dist)],
+            [str(venv_python()), "-m", "xu", "--supervise"],
             stdin=subprocess.DEVNULL, stdout=lf, stderr=subprocess.STDOUT,
             cwd=REPO, env=brain_env(), **detach_kwargs(),
         )
+    # Bootstrap: `cmd_supervise` checks this file before its first spawn and
+    # then repoints it at the real brain pid, so it must exist here.
     pid_file().write_text(f"{proc.pid}\n")
 
-    # Wait for readiness (TCP open beats grepping the log; abort if the
-    # child already died).
+    # Wait for readiness (TCP open beats grepping the log). The brain may be
+    # relaunching, so give the supervisor a few cycles' worth of patience.
     port = int(brain_port()) if brain_port().isdigit() else None
-    if poll_ready("127.0.0.1", port, proc):
-        print(f"xu: running (pid {proc.pid})")
+    if poll_ready("127.0.0.1", port, None, timeout=20.0):
+        print(f"xu: running (pid {read_pid()}) — supervised by {read_watch_pid()}")
         print(f"xu: web UI  → http://127.0.0.1:{web_port()}")
         print(f"xu: ws      → ws://127.0.0.1:{brain_port()}")
         print(f"xu: data    → {data_home()}")
@@ -328,24 +388,42 @@ def cmd_start() -> None:
 def cmd_stop() -> None:
     if not is_running():
         print("xu: not running")
-        pid_file().unlink(missing_ok=True)  # drop a stale pid file
+        # Stale pid files must go: the supervisor reads brain.pid to decide
+        # whether to relaunch, and a stray supervisor would keep running.
+        pid_file().unlink(missing_ok=True)
+        if (watch_pid := read_watch_pid()) and process_alive(watch_pid):
+            terminate(watch_pid, force=True)
+        watch_file().unlink(missing_ok=True)
         return
     pid = read_pid()
+    # The supervisor reacts to a dying brain by respawning it, so it dies
+    # first — otherwise `xu stop` would be undone a second later.
+    watch_pid = read_watch_pid()
+    if watch_pid:
+        print(f"xu: stopping supervisor (pid {watch_pid})…")
+        terminate(watch_pid)
     print(f"xu: stopping (pid {pid})…")
     terminate(pid)
-    for _ in range(30):  # ~3s graceful window (30 x 0.1s, same as bash)
-        if not process_alive(pid):
+    for _ in range(60):  # ~6s: brain + supervisor, 0.1s steps
+        if not process_alive(pid) and not (watch_pid and process_alive(watch_pid)):
             break
         time.sleep(0.1)
     if process_alive(pid):
         terminate(pid, force=True)
+    if watch_pid and process_alive(watch_pid):
+        terminate(watch_pid, force=True)
     pid_file().unlink(missing_ok=True)
+    watch_file().unlink(missing_ok=True)
     print("xu: stopped")
 
 
 def cmd_status() -> None:
     if is_running():
-        print(f"xu: running (pid {read_pid()})")
+        watch_pid = read_watch_pid()
+        if watch_pid and process_alive(watch_pid):
+            print(f"xu: running (pid {read_pid()}) — supervised by {watch_pid}")
+        else:
+            print(f"xu: running (pid {read_pid()})")
         print(f"  ws   → ws://127.0.0.1:{brain_port()}")
         print(f"  web  → http://127.0.0.1:{web_port()}")
         print(f"  data → {data_home()}")
@@ -444,6 +522,10 @@ def main(argv: list[str] | None = None) -> int:
     data_home().mkdir(parents=True, exist_ok=True)
 
     commands = {
+        # `--supervise` is the internal launcher used by `xu start`: one
+        # detached process that keeps the brain up. Not part of the user
+        # vocabulary, so USAGE does not list it.
+        "--supervise": cmd_supervise,
         "start": cmd_start,
         "stop": cmd_stop,
         "restart": lambda: (cmd_stop(), cmd_start()),

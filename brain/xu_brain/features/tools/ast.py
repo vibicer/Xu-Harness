@@ -111,6 +111,25 @@ class AstEditTool(Tool):
         if not sg:
             return ToolResult.err("ast-grep binary not installed")
         targets = [str(_resolve(ctx.cwd, p)) for p in paths]
+        backup_mgr = getattr(ctx, "backups", None)
+        if backup_mgr is None and getattr(ctx, "data_home", None):
+            try:
+                from ..backup import BackupManager
+                backup_mgr = BackupManager(ctx.data_home)
+            except Exception:
+                backup_mgr = None
+        tokens = []
+        if backup_mgr:
+            for t in targets:
+                tokens.append(
+                    backup_mgr.record_pre_state(
+                        getattr(ctx, "session_id", ""),
+                        getattr(ctx, "turn_id", ""),
+                        t,
+                        "ast_edit",
+                        ctx.cwd,
+                    )
+                )
         # `-U` is what actually writes the files; without it ast-grep only
         # prints a diff and exits 0, so the tool reported matches it never
         # applied. `--json` suppresses the write even alongside `-U`, so the
@@ -131,6 +150,9 @@ class AstEditTool(Tool):
         n = int(applied.group(1)) if applied else 0
         if not n:
             return ToolResult.ok(f"rewrote 0 matches\n{stderr.strip()}", raw={"matches": 0})
+        if backup_mgr and tokens:
+            for tok in tokens:
+                backup_mgr.commit_post_state(tok)
         return ToolResult.ok(f"rewrote {n} matches", raw={"matches": n, "stderr": stderr})
 
 

@@ -66,5 +66,19 @@ export function ProvidersMixin<T extends Ctor<StoreCoreBase>>(Base: T) {
       });
       this.state = { ...this.state, model };
     }
+
+    /** Set the session's reasoning effort, or clear it with null.
+     *
+     *  null is not "no reasoning": it sends no effort field at all, which
+     *  leaves the provider's (or a router's) own default in force. The brain
+     *  rejects anything outside the `app.info` ladder, so the picker can only
+     *  offer values the wire accepts. */
+    async setEffort(effort: string | null): Promise<void> {
+      await this.client.call("state.set_effort", {
+        session_id: this.activeSessionId,
+        effort,
+      });
+      this.state = { ...this.state, reasoning_effort: effort };
+    }
   };
 }

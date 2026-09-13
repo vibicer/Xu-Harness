@@ -14,6 +14,9 @@ export interface TurnDraft {
   reasoning: string; // streamed thinking (rendered in its own block)
   notice?: string; // transient status (e.g. retrying) — never persisted as text
   failed?: string;
+  /** epoch ms of `turn.started`, so the thinking counter survives a remount
+   *  mid-turn and keeps counting from the real start. */
+  startedAt?: number;
 }
 
 export type SessionStatus = {
@@ -59,5 +62,7 @@ export function pushReasoning(steps: Step[], delta: string): Step[] {
   if (last && last.kind === "reasoning") {
     return [...steps.slice(0, -1), { ...last, text: (last.text ?? "") + delta }];
   }
-  return [...steps, { kind: "reasoning", text: delta }];
+  // `t0` is the client's own segment start; the brain persists `elapsed` for
+  // the same span, so the live tick and the settled row report one quantity.
+  return [...steps, { kind: "reasoning", text: delta, t0: Date.now() }];
 }

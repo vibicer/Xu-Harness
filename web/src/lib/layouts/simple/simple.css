@@ -236,9 +236,9 @@
 .simple-rail-head { flex: 0 0 auto; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 15px 16px 13px; border-bottom: 1px solid var(--border); }
 .simple-rail-head h2 { margin: 0; font-size: 13px; font-weight: 650; letter-spacing: .04em; text-transform: uppercase; color: var(--dim); }
 
-/* Sessions / Config / Logs keep the page-scroll they were built for. */
-.simple-view { flex: 1; min-height: 0; overflow-y: auto; }
-
+/* Sessions / Config / Logs keep the page-scroll they were built for inside .view-inner. */
+.simple-view { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
+.simple-shell .view-inner { flex: 1; min-height: 0; overflow-y: auto; }
 .simple-muted, .simple-empty { color: var(--dim); }
 .simple-muted { font-size: 12px; }
 .simple-empty { margin: 0; font-size: 13px; }
@@ -275,7 +275,16 @@
 
 /* Kill every hard offset shadow and clipped corner in one pass. */
 .simple-shell #chat-main *, .simple-shell #astate *,
-.simple-shell .sub-panel, .simple-shell .dir-modal-panel { box-shadow: none; clip-path: none; }
+.simple-shell .panel, .simple-shell .sub-panel, .simple-shell .dir-modal-panel { box-shadow: none; clip-path: none; }
+.simple-shell .panel {
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  filter: none;
+  box-shadow: 0 12px 36px rgb(0 0 0 / 22%);
+}
+.simple-shell .cfg-sec {
+  border-radius: 14px;
+}
 /* …and the pixel-shove on :active, which reads as a game button. */
 .simple-shell #chat-main *:active, .simple-shell #astate *:active { transform: none; }
 
@@ -329,28 +338,100 @@
 }
 .simple-shell .msg .box:hover .copy { opacity: 1; }
 .simple-shell .copy:hover { color: var(--cyan); border-color: var(--cyan); }
- /* No LED comet ring while responding — a quiet "Processing…" line at the
-    foot of the live message instead. Chat.svelte already toggles `working`
-    on .msg.assistant for the whole turn, so the line stays for the full
-    stream and clears when the turn ends. Pure CSS, no JS or HTML change. */
+ /* No LED comet ring, and no whole-turn text cue either — in simple the
+    streaming content carries the turn, with the tab busy dot lit behind it. */
  .simple-shell .msg.assistant.working .box::before { display: none; }
- .simple-shell .msg.assistant.working .stream-idle { display: none; }
- .simple-shell .stream-idle, .simple-shell .turn-notice { animation: none; color: var(--dim); }
+ /* .stream-idle is deliberately NOT hidden here — simple relabels it into
+    "Processing…" below, so the empty-bubble state has one source of truth. */
  .simple-shell .idle-dot { animation: none; box-shadow: none; background: var(--cyan); }
  .simple-shell .msg .box .interrupted { color: var(--amber); font-size: 12px; }
 
- /* Processing line: label + three dots breathing at the same 1s cadence as
-    the tab busy dot (reuses simpleTabPulse), so every simple indicator
-    pulses in one quiet rhythm. */
- .simple-shell .msg.assistant.working .box::after {
+ /* "Processing…" = default's "waiting for response…", same state, other word.
+    The live assistant bubble exists as soon as the turn starts, but it has no
+    content yet, so it must not read as a blank reply or a crash. default says
+    what the system is doing; simple says what the AI is doing — Transcript
+    renders that one element exactly while the bubble is empty, so the wording
+    swap inherits the correct lifetime for free: the first thought, tool chip or
+    answer token removes the element and the line is gone. Nothing here is gated
+    on the turn, and nothing is invented on a pseudo-element the markup doesn't
+    know about.
+    font-size:0 swallows default's English text (padding keeps it in flow); the
+    ::after restores type at the tab busy dot's 1s cadence, so every simple
+    indicator pulses in one quiet rhythm. */
+ .simple-shell .msg.assistant.working .stream-idle {
+   font-size: 0;
+   color: var(--dim);
+ }
+ .simple-shell .msg.assistant.working .stream-idle::after {
    content: "Processing\00A0\00A0• • •";
    display: block;
-   margin-top: 12px;
    font-size: 12px; font-weight: 600; letter-spacing: .04em;
-   color: var(--dim);
    animation: simpleTabPulse 1s ease-in-out infinite;
  }
 
+
+ /* The pup — simple's whole-turn companion. ---------------------------------
+    Default answers "is the turn still running?" with an LED comet ring around
+    the bubble; simple disables that ring, so between phases the message column
+    goes quiet and only the composer's stop button still says anything. This
+    walks a flat 8-bit dog along the top edge of the input box for exactly as
+    long as the turn runs.
+
+    Why on the composer and not above the reply: the spot is fixed, so it never
+    takes height from the transcript and never shifts the text when a turn
+    starts. It also retires the stacking problem — the dog and the "Processing…"
+    line are now in different places, so both can be truthful at once and no
+    hand-off rule between them is needed. The dog means "the turn is running"
+    for the whole turn; the line means "nothing has come back yet" inside the
+    empty bubble. Neither one has to know about the other.
+
+    The hook is free: `#chat-main` already carries `.working` (Chat.svelte:
+    `busy || isBusy || draft !== null`) and the composer sits inside it, so
+    there is no markup change and `.pending` is not involved here at all.
+    `#composer-box` claims no pseudo-element in either stylesheet.
+
+    Flat by rule (see the re-skin note above): one palette hue, no glow, no
+    offset shadow. A CSS *mask*, not a background, so pup.svg carries no colour
+    and themes itself to `--cyan`. It holds one place just outside the box's
+    top-left and runs on the spot, so the only animated properties are `mask-position` and
+    `transform` — nothing reflows, and the dog never wanders into the input text
+    or off the rounded corner. Two frames swap in hard steps: sliding the legs
+    between them reads as skating, stepping reads as running. */
+ .simple-shell #composer-box { position: relative; } /* the pup's lane */
+ .simple-shell #chat-main.working #composer-box::before {
+   content: "";
+   position: absolute;
+   bottom: calc(100% + 3px);           /* fully outside the box, clear above its
+                                          top border — not straddling it */
+   left: 20px;                         /* clear of the 28px rounded pill corner */
+   width: 18px; height: 16px;          /* `transform` stays free for the body lift */
+   background: var(--cyan);
+   -webkit-mask: url("./pup.svg") no-repeat 0 0 / 36px 16px;
+   mask: url("./pup.svg") no-repeat 0 0 / 36px 16px;
+   animation: xu-pup-run .24s steps(1, end) infinite;
+ }
+ /* Runs on the spot — it never crosses the box. One animation drives both the
+    leg swap and the body lift, in one keyframe block, so the body always rises
+    on the same frame the hind legs gather; two separate animations would drift
+    out of phase and read as a dog with a limp. `steps(1, end)` holds each
+    frame instead of interpolating it, which is the difference between a 2-frame
+    sprite running and a 2-frame sprite melting. */
+ @keyframes xu-pup-run {
+   0%, 49.9% {
+     -webkit-mask-position: 0 0;      mask-position: 0 0;
+     transform: translateY(0);
+   }
+   50%, 100% {
+     -webkit-mask-position: -18px 0;  mask-position: -18px 0;
+     transform: translateY(-1px);
+   }
+ }
+ /* Nothing to declare here, and deliberately so. theme.css ends its reduce
+    block with `*, *::before, *::after { animation: none !important }`, which
+    parks the pup standing on frame A at the left of the border — a still dog is
+    still an honest "in progress", and hiding it would leave those users with no
+    companion cue at all. Since the run never moved the dog, there is no parked
+    position left to choose. */
 /* Tool calls and reasoning: quiet indented rules, not framed terminal logs.
    ToolChip renders shape-specific panes (terminal / note / search); Simple
    keeps them but softens them — hairlines, soft radii, near-neutral surfaces. */
@@ -384,14 +465,13 @@
 .simple-shell .toollog .tl-note-page { border-top-left-radius: 0; }
 .simple-shell .toollog .tl-hits { border-radius: 999px; }
 .simple-shell .tl-sub { border-radius: 6px; font-size: 10px; padding: 2px 7px; }
-.simple-shell .think {
-  border: 1px solid var(--border); border-radius: 10px;
-  background: var(--surface-2); max-width: none; opacity: 1;
-}
-.simple-shell .think .tk-head { border-bottom: 1px solid var(--border); background: transparent; font-size: 12px; }
-.simple-shell .think .tk-tool, .simple-shell .think.run .tk-tool { color: var(--dim); font-weight: 600; animation: none; text-shadow: none; }
-.simple-shell .think .tk-icon { color: var(--faint); }
-.simple-shell .think .tk-body { color: var(--dim); font-style: normal; font-size: 13px; }
+/* The Ledger, in this shell's dialect: a softer rule, a round LED, mono label
+   instead of the pixel face, and no glow anywhere. */
+.simple-shell .lg { border-left: 2px solid var(--border); max-width: none; margin: 14px 0; }
+.simple-shell .lg-row { font-family: var(--mono); font-size: 11px; font-weight: 600; letter-spacing: .12em; color: var(--dim); }
+.simple-shell .lg-led { border-radius: 50%; box-shadow: none; }
+.simple-shell .lg.done .lg-led { background: var(--ok); box-shadow: none; }
+.simple-shell .lg-body { font-size: 13px; line-height: 1.65; }
 .simple-shell .err-block { border: 1px solid var(--danger); border-radius: 10px; max-width: none; }
 .simple-shell .err-block .err-head {
   border-bottom: 1px solid var(--danger); background: transparent;
@@ -447,27 +527,56 @@
 }
 .simple-shell #chat-main .btn.sm, .simple-shell #astate .btn.sm { padding: 5px 10px; font-size: 11px; }
 
-/* Composer: a rounded input bar, no `>_` terminal prompt, round send button. */
+/* Composer: Floating Pill Capsule silhouette, frameless attachment button, micro-bounce send button. */
 .simple-shell #composer { padding: 12px 22px 16px; }
 .simple-shell #composer-box {
   max-width: 820px;
-  border: 1px solid var(--border); border-radius: 14px;
-  background: var(--surface-2); padding: 9px 10px 9px 15px; gap: 10px;
+  border: 1px solid var(--border); border-radius: 28px;
+  background: var(--surface-2); padding: 6px 8px 6px 18px; gap: 10px;
+  box-shadow: 0 8px 24px -6px rgba(0, 0, 0, 0.45);
+  transition: border-color 0.2s cubic-bezier(0.16, 1, 0.3, 1), box-shadow 0.2s cubic-bezier(0.16, 1, 0.3, 1), background 0.2s cubic-bezier(0.16, 1, 0.3, 1);
 }
-.simple-shell #composer-box:focus-within { border-color: var(--cyan); }
+.simple-shell #composer-box:focus-within {
+  border-color: var(--cyan);
+  background: var(--surface-3);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--cyan) 16%, transparent), 0 12px 30px -8px rgba(0, 0, 0, 0.6);
+}
 .simple-shell #composer-box .prompt { display: none; }
-.simple-shell #composer-input { font-size: 14.5px; line-height: 1.5; caret-color: var(--cyan); }
+.simple-shell #composer-input { font-size: 14.5px; line-height: 1.45; caret-color: var(--cyan); padding: 7px 0; }
+.simple-shell #composer-side { display: flex; align-items: center; gap: 6px; }
 .simple-shell #send-btn, .simple-shell #stop-btn {
   width: 36px; height: 36px; border-radius: 50%; border: 0;
   display: flex; align-items: center; justify-content: center; font-size: 14px;
 }
-.simple-shell #send-btn { background: var(--cyan); color: #101821; }
-.simple-shell #stop-btn { background: var(--danger); color: #101821; }
+.simple-shell #send-btn {
+  background: var(--cyan); color: #0b0d10;
+  box-shadow: 0 2px 8px color-mix(in srgb, var(--cyan) 25%, transparent);
+  transition: transform 0.15s ease, filter 0.15s ease, box-shadow 0.15s ease;
+}
+.simple-shell #send-btn:hover:not(:disabled) {
+  filter: brightness(1.1); transform: scale(1.05);
+  box-shadow: 0 4px 12px color-mix(in srgb, var(--cyan) 35%, transparent);
+}
+.simple-shell #send-btn:active:not(:disabled) { transform: scale(0.95); }
+.simple-shell #send-btn:disabled {
+  opacity: 0.35; cursor: default; transform: none; box-shadow: none; filter: none;
+}
+.simple-shell #stop-btn {
+  background: var(--danger); color: #0b0d10;
+  transition: transform 0.15s ease, filter 0.15s ease;
+}
+.simple-shell #stop-btn:hover { filter: brightness(1.1); transform: scale(1.05); }
+.simple-shell #stop-btn:active { transform: scale(0.95); }
 .simple-shell #att-btn {
   width: 34px; height: 34px; border-radius: 50%;
-  border: 1px solid var(--border); background: transparent; color: var(--dim);
+  border: 0; background: transparent; color: var(--dim);
+  display: flex; align-items: center; justify-content: center;
+  transition: color 0.15s ease, background 0.15s ease;
 }
-.simple-shell #att-btn:hover { border-color: var(--cyan); color: var(--cyan); }
+.simple-shell #att-btn:hover {
+  background: color-mix(in srgb, var(--surface-3) 75%, transparent);
+  color: var(--text);
+}
 .simple-shell #composer-foot { max-width: 820px; margin: 9px auto 0; gap: 7px; font-size: 11px; }
 .simple-shell #composer-foot .foot-group, .simple-shell #composer-foot .foot-status {
   border: 1px solid var(--border); border-radius: 99px; background: transparent; padding: 3px 11px;
@@ -485,12 +594,14 @@
 .simple-shell .att-x { border-radius: 0 0 0 8px; }
 .simple-shell .queued-msg { border: 1px dashed var(--border-strong); border-radius: 9px; color: var(--dim); padding: 5px 11px; }
 .simple-shell .queued-tag { color: var(--amber); font-size: 10px; font-weight: 650; letter-spacing: .1em; }
-.simple-shell .queued-steer { flex: none; margin-left: auto; border: 0; background: transparent; color: var(--dim); font-size: 11px; line-height: 1; padding: 2px 5px; cursor: pointer; }
-.simple-shell .queued-steer:hover:not(:disabled) { color: var(--accent, var(--magenta)); }
-.simple-shell .queued-steer:disabled { opacity: .4; cursor: default; }
-.simple-shell .queued-x { flex: none; margin-left: auto; border: 0; background: transparent; color: var(--dim); font-size: 11px; line-height: 1; padding: 2px 5px; cursor: pointer; }
-.simple-shell .queued-x:hover:not(:disabled) { color: var(--danger); }
-.simple-shell .queued-x:disabled { opacity: .4; cursor: default; }
+/* per-row actions (edit / send now / remove) — a little more padding than the
+   default layout: this shell is the one most often touched. */
+.simple-shell .queued-acts { flex: none; margin-left: auto; display: flex; align-items: center; gap: 2px; }
+.simple-shell .queued-act { border: 0; background: transparent; color: var(--dim); font-size: 11px; line-height: 1; padding: 4px 6px; cursor: pointer; }
+.simple-shell .queued-act:disabled { opacity: .4; cursor: default; }
+.simple-shell .queued-act.is-edit:hover:not(:disabled) { color: var(--accent, var(--cyan)); }
+.simple-shell .queued-act.is-send:hover:not(:disabled) { color: var(--accent, var(--magenta)); }
+.simple-shell .queued-act.is-x:hover:not(:disabled) { color: var(--danger); }
 
 /* Task badge above the composer. */
 .simple-shell #todo-strip { right: 22px; }
@@ -639,9 +750,28 @@ background: var(--surface-2); padding: 10px; font-size: 12px;
    drop-shadows — so this shell only has to lend it its own radii, sans type and
    cyan accent. Structure (sections, the two-column row, the commit bar) is
    theme.css's and is deliberately left alone. */
-.simple-shell .cfg-sec-hd { border-top: 1px solid var(--border); }
-.simple-shell .cfg-sec-hd .t { font-family: inherit; font-size: 12.5px; font-weight: 650; letter-spacing: .2px; text-transform: none; }
-.simple-shell .cfg-sec-hd .d { font-family: inherit; font-size: 12px; }
+.simple-shell .cfg-sec-hd {
+display: flex;
+align-items: center;
+gap: 12px;
+border-top: 1px solid var(--border);
+padding-top: 14px;
+padding-bottom: 8px;
+margin-bottom: 6px;
+}
+.simple-shell .cfg-sec:first-child .cfg-sec-hd {
+border-top: none;
+padding-top: 4px;
+}
+.simple-shell .cfg-sec-hd .t { font-family: inherit; font-size: 12.5px; font-weight: 650; letter-spacing: .2px; text-transform: none; line-height: 1.4; }
+.simple-shell .cfg-sec-hd .d { font-family: inherit; font-size: 12px; line-height: 1.4; }
+.glass-on .simple-shell .cfg-sec-hd {
+border-top: none;
+border-bottom: 1px solid var(--border);
+padding-top: 0;
+padding-bottom: 10px;
+margin-bottom: 8px;
+}
 .simple-shell .cfg-row { border-radius: 10px; }
 .simple-shell .cfg-row .label { font-family: inherit; font-size: 13.5px; font-weight: 650; }
 .simple-shell .cfg-row .label small { font-family: inherit; font-size: 12px; font-weight: 400; }
@@ -689,11 +819,56 @@ background: var(--surface-2); padding: 10px; font-size: 12px;
 /* The commit bar is the one piece that must stay obvious: rounded bottom corners
    and a dropped shadow, so it reads as a tray pinned under the tab strip. */
 .simple-shell .cfg-bar {
-  border: 1px solid var(--border); border-radius: 0 0 12px 12px; background: var(--surface-2);
-  box-shadow: 0 6px 18px rgb(0 0 0 / 28%);
+position: sticky;
+top: 0;
+z-index: 70;
+border: 1px solid var(--border);
+border-radius: 10px;
+background: var(--surface-2);
+box-shadow: 0 8px 24px rgba(0, 0, 0, 0.25);
+margin-bottom: 12px;
 }
 .simple-shell .cfg-bar .st { font-family: inherit; font-size: 12.5px; }
 
+/* Config search bar in Simple layout */
+.simple-shell .cfg-search-bar {
+border-radius: 9px;
+background: var(--surface-2);
+border: 1px solid var(--border);
+height: 32px;
+width: 280px;
+max-width: 100%;
+padding: 0 10px;
+}
+.simple-shell .cfg-search-bar:focus-within {
+border-color: var(--cyan);
+box-shadow: 0 0 0 2px color-mix(in srgb, var(--cyan) 25%, transparent);
+}
+.simple-shell .cfg-search-results {
+border-radius: 12px;
+background: var(--surface);
+border: 1px solid var(--border);
+box-shadow: 0 12px 28px rgba(0, 0, 0, 0.25);
+}
+.simple-shell .cfg-search-head {
+font-family: inherit;
+font-size: 11px;
+}
+.simple-shell .cfg-search-badge {
+border-radius: 6px;
+background: var(--surface-3);
+border: 1px solid var(--border);
+color: var(--cyan);
+font-family: inherit;
+font-size: 11px;
+}
+.simple-shell .cfg-search-title {
+font-family: inherit;
+font-weight: 650;
+}
+.simple-shell .cfg-search-desc {
+font-family: inherit;
+}
 @media (max-width: 1080px) {
   /* No room for chat + rail side by side: the rail floats over the chat.
      `width`, not `flex-basis`: an absolutely positioned box is out of flow and
@@ -720,29 +895,66 @@ background: var(--surface-2); padding: 10px; font-size: 12px;
 .glass-on .simple-sidebar { background: color-mix(in srgb, var(--bg-2) var(--glass-keep, 60%), transparent); }
 .glass-on .simple-rail { background: color-mix(in srgb, var(--surface) var(--glass-keep, 60%), transparent); }
 .glass-on .simple-shell #composer-box { background: color-mix(in srgb, var(--surface-2) var(--glass-keep, 60%), transparent); }
+.glass-on .simple-shell #composer-box:focus-within { background: color-mix(in srgb, var(--surface-3) var(--glass-keep, 60%), transparent); }
 .glass-on .simple-shell .panel-hdr { background: color-mix(in srgb, var(--surface-2) var(--glass-keep, 60%), transparent); }
 
 /* Panels & windows (the simple layout's dialect of the shared surfaces). */
-.glass-on .simple-shell .msg.user .box,
 .glass-on .simple-shell .strow,
 .glass-on .simple-card,
+.glass-on .simple-shell .panel,
+.glass-on .simple-shell .cfg-sec,
 .glass-on .simple-shell .sub-panel,
 .glass-on .simple-shell .dir-modal-panel,
 .glass-on .simple-shell .mpick-menu {
   -webkit-backdrop-filter: blur(var(--glass-panel-blur, 12px)) saturate(150%);
   backdrop-filter: blur(var(--glass-panel-blur, 12px)) saturate(150%);
 }
-.glass-on .simple-shell .msg.user .box { background: color-mix(in srgb, var(--surface-2) var(--glass-panel-keep, 80%), transparent); }
+/* User bubbles are glazed from behind by ::after, never by filtering the box
+   that carries the glyphs — a backdrop-filtered element is a composited layer,
+   and its text rasterises at the unzoomed scale. See the long note in theme.css. */
+.glass-on .simple-shell .msg.user .box { background: transparent; }
+.glass-on .simple-shell .msg.user .box::after {
+  content: ""; position: absolute; inset: 0; z-index: -1; pointer-events: none;
+  border-radius: inherit;
+  background: color-mix(in srgb, var(--surface-2) var(--glass-panel-keep, 80%), transparent);
+  -webkit-backdrop-filter: blur(var(--glass-panel-blur, 12px)) saturate(150%);
+  backdrop-filter: blur(var(--glass-panel-blur, 12px)) saturate(150%);
+}
+/* Assistant bubbles get no glass panel at all. Unlike the user bubble, an
+   assistant `.box` in simple is already frameless — border 0, transparent
+   background, no padding (see .simple-shell .msg .box) — so theme.css's
+   `.glass-on .msg .box::after` frosted layer was the only thing still making it
+   read as a card. Removing it leaves the reply as plain text on the page, which
+   is what simple is for; the user bubble keeps its panel because there the
+   tint is what separates the two sides. */
+.glass-on .simple-shell .msg.assistant .box::after { content: none; }
+
 .glass-on .simple-shell .strow { background: color-mix(in srgb, var(--surface-2) var(--glass-panel-keep, 80%), transparent); }
 .glass-on .simple-card,
+.glass-on .simple-shell .panel,
+.glass-on .simple-shell .cfg-sec,
 .glass-on .simple-shell .sub-panel,
 .glass-on .simple-shell .dir-modal-panel,
 .glass-on .simple-shell .mpick-menu { background: color-mix(in srgb, var(--surface) var(--glass-panel-keep, 80%), transparent); }
 
-/* The ambient/wallpaper FX paints on <body>, but `.simple-shell`'s opaque
-   `background: var(--bg)` covers it. Drop it while any background FX is on so
+.glass-on .simple-shell .cfg-pane input[type=text],
+.glass-on .simple-shell .cfg-pane input[type=password],
+.glass-on .simple-shell .cfg-pane input[type=url],
+.glass-on .simple-shell .cfg-pane input[type=number],
+.glass-on .simple-shell .cfg-pane select,
+.glass-on .simple-shell .cfg-pane textarea,
+.glass-on .simple-shell .k-in,
+.glass-on .simple-shell .k-step,
+.glass-on .simple-shell .k-seg {
+  background: color-mix(in srgb, var(--surface-2) var(--glass-panel-keep, 80%), transparent);
+}
+.glass-on .simple-shell .cfg-mode,
+.glass-on .simple-shell #preset-editor {
+  background: color-mix(in srgb, var(--surface-2) var(--glass-panel-keep, 80%), transparent);
+}
+/* The wallpaper FX paints on <body>, but `.simple-shell`'s opaque
+   `background: var(--bg)` covers it. Drop it while wallpaper is on so
    the shell goes wallpaper/glass-aware like the default layout. */
-body.bgfx-on .simple-shell,
 body.bgfx-wall .simple-shell { background: transparent; }
 
 @media (max-width: 760px) {
@@ -767,9 +979,85 @@ body.bgfx-wall .simple-shell { background: transparent; }
   .simple-shell #composer { padding: 10px 14px 12px; }
   .simple-shell #todo-strip { right: 14px; }
   .simple-shell .msg.user .box { max-width: 88%; }
+
+  /* Touch pass: the tab controls and the rail controls are the primary thumb
+     targets on a phone, so every one gets a ≥44px hit area. The close button's
+     *box* stays 26px wide — a 44px box would shave the tab's 142px strip and
+     visibly shift the glyph — so a centred ::after carries the full 44px hit
+     area instead. min-width/min-height beat the later width/height in the
+     ≤1080 rail block: the used size is max(box, min). */
+  .simple-tab-name, .simple-tab-close, .simple-tab-add { min-height: 44px; }
+  .simple-tab-close { position: relative; }
+  .simple-tab-close::after {
+    content: ""; position: absolute; left: 50%; top: 50%;
+    width: 44px; height: 44px; transform: translate(-50%, -50%);
+  }
+  .simple-tab-add { min-width: 44px; }
+  .simple-rail-close { min-width: 44px; min-height: 44px; }
+  .simple-rail-toggle { min-height: 44px; }
 }
 
 @media (max-width: 420px) {
   .simple-links .lbl { display: none; }
   .simple-nav button > span:last-child { max-width: 58px; }
+}
+
+/* ---------- the rail as a drawer (≤1080px) ----------
+   Above 1080px `.simple-rail` is a column in `.simple-work` and is always
+   shown; nothing below applies. Below it the older rule floats the rail *over*
+   the chat — which on a phone meant a 316px panel sitting on top of a 390px
+   conversation, with no way to dismiss it. Same fold the default layout uses:
+   off-canvas until asked for.
+
+   `railOpen` starts false and CSS ignores it above 1080px (the rail is in flow
+   there), so one state serves both without a matchMedia in script. */
+.simple-rail-toggle,
+.simple-rail-close,
+.simple-rail-backdrop { display: none; }
+
+@media (max-width: 1080px) {
+  /* Clipping is not cosmetic. A translated element still counts toward
+     `scrollWidth`, so an off-canvas rail widened the document by its own width
+     and handed the page a sideways pan into nothing. */
+  .simple-work { overflow: hidden; }
+  .simple-rail {
+    /* +20px, not 100%: the rail is positioned inside `.simple-work`'s 14px
+       gutter, so a 100% translate parks its left edge 14px short of the screen
+       edge and leaves a sliver of panel peeking on the right. */
+    transform: translateX(calc(100% + 20px));
+    transition: transform .2s ease-out;
+    will-change: transform;
+  }
+  .rail-open .simple-rail { transform: none; }
+  .rail-open .simple-rail-backdrop { display: block; }
+  .simple-rail-backdrop {
+    position: absolute; inset: 0; z-index: 4;
+    border: 0; background: rgba(6, 3, 14, .55); cursor: pointer;
+  }
+  /* Both dismissals a phone has: the × in the rail's own header, and a tap on
+     the dimmed chat (plus Esc, which onKeydown already routes here). */
+  .simple-rail-close {
+    display: grid; place-items: center;
+    width: 30px; height: 30px; flex: 0 0 auto;
+    background: none; border: 1px solid var(--border); color: var(--dim);
+    cursor: pointer;
+  }
+  .simple-rail-close:hover, .simple-rail-close:focus-visible { color: var(--danger); border-color: var(--danger); }
+  .simple-rail-toggle {
+    display: inline-flex; align-items: center; gap: 5px;
+    padding: 4px 9px; background: none; cursor: pointer;
+    border: 1px solid var(--border); color: var(--dim);
+    font-size: 12px; white-space: nowrap;
+  }
+  .simple-rail-toggle.active { color: var(--cyan); border-color: currentColor; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .simple-rail { transition: none; }
+}
+
+/* Below 420px the topbar is genuinely tight; the glyph carries the meaning, so
+   drop the word (mirrors `.simple-links .lbl` above). */
+@media (max-width: 420px) {
+  .simple-rail-toggle .lbl { display: none; }
 }

@@ -150,6 +150,11 @@
     box-shadow: 0 8px 24px rgba(0 0 0 / 0.4);
     font-size: 12px; text-align: left;
   }
+  :global(.glass-on) .gc-panel {
+    background: color-mix(in srgb, var(--surface) var(--glass-panel-keep, 80%), transparent);
+    -webkit-backdrop-filter: blur(var(--glass-panel-blur, 12px)) saturate(150%);
+    backdrop-filter: blur(var(--glass-panel-blur, 12px)) saturate(150%);
+  }
   .gc-head { display: flex; align-items: center; gap: 8px; }
   .gc-head strong { font-size: 13px; }
   .gc-up { color: var(--fg-dim, #8ea2c0); font-size: 11px; }

@@ -93,7 +93,8 @@ function tryTable(
  * (every turn reload, every session switch), and Svelte's {@html} only skips
  * the innerHTML write — the parse still runs. The render is pure, so cache it
  * by source text: a reload becomes a Map lookup. Cap guards pathological
- * sessions; clearing wholesale is fine because every miss just re-parses. */
+ * sessions; the oldest entry is evicted rather than clearing the whole cache,
+ * so a long session does not re-parse everything on the next render. */
 const MD_CACHE = new Map<string, string>();
 const MD_CACHE_CAP = 4000;
 
@@ -101,7 +102,15 @@ export function renderMarkdown(src: string): string {
   const hit = MD_CACHE.get(src);
   if (hit !== undefined) return hit;
   const out = mdToHtml(src);
-  if (MD_CACHE.size >= MD_CACHE_CAP) MD_CACHE.clear();
+  if (MD_CACHE.size >= MD_CACHE_CAP) {
+    // Map preserves insertion order, so the first key is the oldest entry.
+    // Evicting one at a time keeps the cache warm; a wholesale clear turns the
+    // next render of a long session into a burst of full re-parses — the exact
+    // cliff this cache exists to avoid. (Streaming text no longer reaches here
+    // at all: the live tail renders as plain text until it settles.)
+    const oldest = MD_CACHE.keys().next().value;
+    if (oldest !== undefined) MD_CACHE.delete(oldest);
+  }
   MD_CACHE.set(src, out);
   return out;
 }

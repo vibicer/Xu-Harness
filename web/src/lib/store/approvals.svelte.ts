@@ -1,3 +1,4 @@
+import { toast } from "../components/Toasts.svelte";
 import type { ApprovalCard } from "../types";
 import type { Ctor, StoreCoreBase } from "./core.svelte";
 
@@ -28,6 +29,22 @@ export function ApprovalsMixin<T extends Ctor<StoreCoreBase>>(Base: T) {
       );
     }
 
+    /** The click never reached the brain (restart / dropped socket): no
+     *  `turn.approval_resolved` can ever arrive, so the card would sit on screen
+     *  for the life of the page. Surface the failure, settle the card locally so
+     *  it can't be re-clicked, then self-remove it like the resolved path does. */
+    private staleApproval(requestId: string, e: unknown): void {
+      const msg = e instanceof Error ? e.message : String(e);
+      console.error("[xu] approval reply failed", e);
+      toast(`Could not send the reply: ${msg}`);
+      this.approvals = this.approvals.map((a) =>
+        a.request_id === requestId ? { ...a, resolved: false, answer: msg } : a,
+      );
+      setTimeout(() => {
+        this.approvals = this.approvals.filter((a) => a.request_id !== requestId);
+      }, 2500);
+    }
+
     /** `remember` = the card's "always" button: stop prompting for this tool
      *  for the rest of the session (brain-side, RISKY only). */
     async resolveApproval(
@@ -35,15 +52,23 @@ export function ApprovalsMixin<T extends Ctor<StoreCoreBase>>(Base: T) {
       approved: boolean,
       remember = false,
     ): Promise<void> {
-      await this.client.call("approval.resolve", {
-        request_id: requestId,
-        approved,
-        remember,
-      });
+      try {
+        await this.client.call("approval.resolve", {
+          request_id: requestId,
+          approved,
+          remember,
+        });
+      } catch (e) {
+        this.staleApproval(requestId, e);
+      }
     }
 
     async replyAsk(requestId: string, answer: string): Promise<void> {
-      await this.client.call("reply.resolve", { request_id: requestId, answer });
+      try {
+        await this.client.call("reply.resolve", { request_id: requestId, answer });
+      } catch (e) {
+        this.staleApproval(requestId, e);
+      }
     }
   };
 }

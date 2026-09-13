@@ -5,11 +5,14 @@ import asyncio
 import json
 import re
 from pathlib import Path
+import time
+import uuid
 from typing import TYPE_CHECKING, Any
 
 from ...core.contract import RpcError
 from ...core.notify import notify
-from . import DEFAULT_CWD
+from ..agent.provider import REASONING_EFFORTS
+from . import DEFAULT_CWD, Message
 
 if TYPE_CHECKING:
     from ...core.runtime import App
@@ -162,6 +165,7 @@ def register(app: App) -> None:
                 **session.to_dict(),
                 "model": app.config.session_model(session.id),
                 "persona": app.config.session_persona(session.id),
+                "reasoning_effort": app.config.session_reasoning_effort(session.id),
             },
             # Frontend transcript comes from the append-only display table, not
             # the model-visible context: compaction rewrites the latter, so
@@ -188,6 +192,13 @@ def register(app: App) -> None:
         sid = str(params.get("id") or "")
         if not sid or app.sessions.get(sid) is None:
             raise RpcError(-32002, "session not found", {"session_id": sid})
+        # Compaction rewrites the model-visible history, but a running turn
+        # holds its own pre-compaction `messages` list and rewrites the store
+        # from it at turn end — so compressing mid-turn is silently reverted
+        # while the transcript keeps the "context compacted" divider. Same
+        # guard and code as session.delete.
+        if sid in app.agent._turns and not app.agent._turns[sid].done():
+            raise RpcError(-32004, "turn in progress", {"session_id": sid})
         # Run off the request path: the summarizer is a long streaming call, and
         # awaiting it inline would block this websocket's read loop — freezing
         # navigation and every other session until it finishes. The result is
@@ -212,6 +223,14 @@ def register(app: App) -> None:
             raise RpcError(-32002, "session not found", {"session_id": sid})
         if not isinstance(text, str):
             raise RpcError(-32602, "text required and must be a string")
+        # Intercept filesystem slash commands: /undo, /redo, /diff
+        stripped = text.strip()
+        if stripped.startswith(("/undo", "/redo", "/diff")):
+            cmd, arg = _parse_slash_args(stripped)
+            handled = await _handle_slash_command(app, sid, cmd, arg, text)
+            if handled is not None:
+                return handled
+
         # Auto-title a fresh session from the first user message.
         session = app.sessions.get(sid)
         if session is not None and session.title == "new session":
@@ -301,6 +320,7 @@ def register(app: App) -> None:
         cwd = session.cwd if session else DEFAULT_CWD
         return {
             "model": app.config.session_model(sid) if sid else None,
+            "reasoning_effort": app.config.session_reasoning_effort(sid) if sid else None,
             "persona": app.config.session_persona(sid) if sid else None,
             "rules": app.config.session_rules(sid) if sid else [],
             "preset": app.presets.get(app.config.session_preset(sid)).to_dict() if (sid and app.config.session_preset(sid)) else None,
@@ -324,6 +344,27 @@ def register(app: App) -> None:
                 app.config.set_session_provider(sid, provider or None)
         await notify.emit("state.updated", session_id=sid, model=model)
         return {"model": model, "provider": provider}
+
+    @app.register("state.set_effort")
+    async def state_set_effort(params: dict[str, Any]) -> dict[str, Any]:
+        """Set the session's reasoning effort, or clear it with ``None``.
+
+        ``None`` is not "no reasoning": it means *send no effort field at all*
+        and let the provider (or a relay in front of it) apply its own default.
+        A value must come from the shared ladder — anything else would reach
+        the wire and be silently ignored by whichever provider reads it.
+        """
+        sid = params.get("session_id")
+        effort = params.get("effort") or None
+        if effort is not None and effort not in REASONING_EFFORTS:
+            raise RpcError(
+                -32602,
+                f"effort must be null or one of {', '.join(REASONING_EFFORTS)}",
+            )
+        if sid:
+            app.config.set_session_reasoning_effort(sid, effort)
+        await notify.emit("state.updated", session_id=sid, reasoning_effort=effort)
+        return {"reasoning_effort": effort}
 
     @app.register("state.set_persona")
     async def state_set_persona(params: dict[str, Any]) -> dict[str, Any]:
@@ -375,3 +416,97 @@ def register(app: App) -> None:
             return json.loads(f.read_text("utf-8"))
         except (json.JSONDecodeError, OSError):
             return {"phases": []}
+
+
+def _parse_slash_args(text: str) -> tuple[str, str]:
+    parts = text.strip().split(maxsplit=1)
+    cmd = parts[0].lower()
+    arg = parts[1].strip() if len(parts) > 1 else ""
+    return cmd, arg
+
+
+async def _handle_slash_command(
+    app: App, session_id: str, cmd: str, arg: str, raw_text: str
+) -> dict[str, Any] | None:
+    session = app.sessions.get(session_id)
+    cwd = session.cwd if session else ""
+    backups = getattr(app, "backups", None)
+    if not backups:
+        return None
+
+    if cmd == "/undo":
+        steps = int(arg) if arg.isdigit() else 1
+        path = None if arg.isdigit() else (arg or None)
+        res = backups.undo(session_id=session_id, steps=steps, path=path, cwd=cwd)
+        reply_lines = []
+        if res.restored:
+            reply_lines.append(f"**Restored ({len(res.restored)})**:\n" + "\n".join(f"- `{p}`" for p in res.restored))
+        if res.deleted:
+            reply_lines.append(f"**Deleted newly created files ({len(res.deleted)})**:\n" + "\n".join(f"- `{p}`" for p in res.deleted))
+        if not reply_lines:
+            reply_text = res.message or "Nothing to undo for this session."
+        else:
+            turns_str = f" from turn(s) {', '.join(res.turns)}" if res.turns else ""
+            reply_text = f"### Undo File Changes{turns_str}\n\n" + "\n\n".join(reply_lines)
+
+        turn_id = f"undo-{uuid.uuid4().hex[:6]}"
+        user_msg = Message(role="user", content=raw_text, ts=time.time())
+        asst_msg = Message(role="assistant", content=reply_text, ts=time.time())
+        app.sessions.append(session_id, user_msg)
+        app.sessions.append(session_id, asst_msg)
+        app.sessions.touch(session_id)
+
+        await notify.emit("turn.started", turn_id=turn_id, session_id=session_id, model="system")
+        await notify.emit("turn.delta", turn_id=turn_id, session_id=session_id, delta=reply_text)
+        await notify.emit("turn.finished", turn_id=turn_id, session_id=session_id, stop_reason="done")
+        await notify.emit("session.updated", session_id=session_id)
+        return {"turn_id": turn_id, "queued_id": None}
+
+    if cmd == "/redo":
+        steps = int(arg) if arg.isdigit() else 1
+        res = backups.redo(session_id=session_id, steps=steps, cwd=cwd)
+        reply_lines = []
+        if res.restored:
+            reply_lines.append(f"**Re-applied ({len(res.restored)})**:\n" + "\n".join(f"- `{p}`" for p in res.restored))
+        if res.deleted:
+            reply_lines.append(f"**Deleted ({len(res.deleted)})**:\n" + "\n".join(f"- `{p}`" for p in res.deleted))
+        if not reply_lines:
+            reply_text = res.message or "Nothing to redo for this session."
+        else:
+            turns_str = f" from turn(s) {', '.join(res.turns)}" if res.turns else ""
+            reply_text = f"### Redo File Changes{turns_str}\n\n" + "\n\n".join(reply_lines)
+
+        turn_id = f"redo-{uuid.uuid4().hex[:6]}"
+        user_msg = Message(role="user", content=raw_text, ts=time.time())
+        asst_msg = Message(role="assistant", content=reply_text, ts=time.time())
+        app.sessions.append(session_id, user_msg)
+        app.sessions.append(session_id, asst_msg)
+        app.sessions.touch(session_id)
+
+        await notify.emit("turn.started", turn_id=turn_id, session_id=session_id, model="system")
+        await notify.emit("turn.delta", turn_id=turn_id, session_id=session_id, delta=reply_text)
+        await notify.emit("turn.finished", turn_id=turn_id, session_id=session_id, stop_reason="done")
+        await notify.emit("session.updated", session_id=session_id)
+        return {"turn_id": turn_id, "queued_id": None}
+
+    if cmd == "/diff":
+        diff_text = backups.diff(session_id=session_id, turn_id=arg or None)
+        if not diff_text.strip():
+            reply_text = "No recent file changes to show diff for."
+        else:
+            reply_text = f"```diff\n{diff_text}\n```"
+
+        turn_id = f"diff-{uuid.uuid4().hex[:6]}"
+        user_msg = Message(role="user", content=raw_text, ts=time.time())
+        asst_msg = Message(role="assistant", content=reply_text, ts=time.time())
+        app.sessions.append(session_id, user_msg)
+        app.sessions.append(session_id, asst_msg)
+        app.sessions.touch(session_id)
+
+        await notify.emit("turn.started", turn_id=turn_id, session_id=session_id, model="system")
+        await notify.emit("turn.delta", turn_id=turn_id, session_id=session_id, delta=reply_text)
+        await notify.emit("turn.finished", turn_id=turn_id, session_id=session_id, stop_reason="done")
+        await notify.emit("session.updated", session_id=session_id)
+        return {"turn_id": turn_id, "queued_id": None}
+
+    return None

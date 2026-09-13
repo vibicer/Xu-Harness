@@ -163,10 +163,15 @@ class PluginBus:
                     raise ImportError(f"cannot create module spec for {f}")
                 module = importlib.util.module_from_spec(spec)
                 spec.loader.exec_module(module)
-            except Exception as exc:
+                # Inspection reads hook attributes off the module, so a PEP-562
+                # `__getattr__` that raises belongs inside the guard too — and
+                # so does `sys.exit()` at module level (SystemExit is not an
+                # Exception). KeyboardInterrupt is left to propagate: Ctrl-C
+                # must still stop the brain.
+                self._plugins[stem] = _Plugin(stem, module)
+            except (Exception, SystemExit) as exc:
                 log.warning("plugin %s failed to import: %s", stem, exc)
                 continue
-            self._plugins[stem] = _Plugin(stem, module)
 
         self._load_enabled()
         self._register_on_bus()

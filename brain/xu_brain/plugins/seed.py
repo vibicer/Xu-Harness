@@ -10,11 +10,13 @@ Mirrors :meth:`xu_brain.features.skills.SkillsEngine._seed_builtin`: runs on
 every boot, not just a fresh one, so a package added by a later version reaches
 an install that already has a plugins dir.
 
-Refresh policy: an installed copy is left alone unless the shipped
-``manifest.version`` differs from the installed one, in which case the shipped
-files are written *over* the top. Nothing is ever deleted, so a file the user
-added next to ours survives — but our own files are ours, and editing them in
-place is not supported. Copy the package under a new name to customize it.
+Refresh policy: an installed copy is left alone unless it declares a
+``manifest.version`` that differs from the shipped one, in which case the
+shipped files are written *over* the top. A copy whose manifest is missing,
+unreadable, or carries no ``version`` is treated as the user's own and is never
+touched. Nothing is ever deleted, so a file the user added next to ours
+survives — but our own files are ours, and editing them in place is not
+supported. Copy the package under a new name to customize it.
 """
 from __future__ import annotations
 
@@ -57,8 +59,22 @@ def seed_builtin_plugins(data_home: Path, source: Path | None = None) -> list[st
             continue
         dest = dest_root / pkg.name
         if dest.exists():
+            # An existing copy is the user's unless it is provably one of ours
+            # and provably older. A manifest without a `version` (it is optional
+            # in the schema) or an unreadable/absent one is not evidence of a
+            # stale built-in, so never write over it — say so instead, because
+            # the user cannot otherwise tell why the built-in stopped updating.
             shipped = _version(pkg / "manifest.json")
-            if shipped is None or shipped == _version(dest / "manifest.json"):
+            installed = _version(dest / "manifest.json")
+            if shipped is None or installed is None:
+                log.warning(
+                    "not seeding built-in plugin %s: the installed copy declares "
+                    "no usable version (installed=%s shipped=%s) — treating it as "
+                    "the user's own",
+                    pkg.name, installed or "<none>", shipped or "<none>",
+                )
+                continue
+            if shipped == installed:
                 continue
         try:
             dest_root.mkdir(parents=True, exist_ok=True)

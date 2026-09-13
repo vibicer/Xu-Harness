@@ -8,15 +8,16 @@ Also serves plugin frontend modules under ``/plugins/<name>/<file>`` (the
 that plugin is enabled, and only the exact file its manifest declares — the
 shell asks for what ``plugin.list`` advertised, nothing else is exposed.
 """
-from __future__ import annotations
-
 import functools
 import http.server
 import os
 import socketserver
 import threading
+import time
 from collections.abc import Callable
 from pathlib import Path
+
+from .activity import activity
 
 MIME: dict[str, str] = {
     ".html": "text/html; charset=utf-8",
@@ -43,6 +44,8 @@ class _SpaHandler(http.server.SimpleHTTPRequestHandler):
 
     ui_lookup: Callable[[str, str], Path | None] | None = None
 
+    timeout = 30  # a stuck client must not be able to pin a handler thread
+
     def end_headers(self) -> None:
         self.send_header("Cache-Control", "public, max-age=0, must-revalidate")
         super().end_headers()
@@ -59,6 +62,7 @@ class _SpaHandler(http.server.SimpleHTTPRequestHandler):
         if not target.is_file():
             self.path = "/"  # SPA fallback: send the app shell
         super().do_GET()
+
 
     def _serve_plugin(self, rel: str) -> bool:
         """Serve a plugin's declared frontend module. True when handled."""
@@ -92,6 +96,23 @@ class _ThreadingServer(socketserver.ThreadingMixIn, http.server.HTTPServer):
     daemon_threads = True
 
 
+def _serve_forever(httpd: _ThreadingServer) -> None:
+    """Keep the webui thread alive: it must not die quietly.
+
+    A crash in this thread used to go unannounced — the brain looked healthy
+    (ws fine) while the browser could not reload a page. Log it to activity
+    and stderr, then re-serve instead of letting the thread end.
+    """
+    while True:
+        try:
+            httpd.serve_forever()
+            return  # graceful close
+        except BaseException as exc:  # noqa: BLE001 — supervise on purpose
+            activity.record("error", "webui", "webui crashed, restarting", repr(exc))
+            print(f"[xu-brain] webui crashed, restarting: {exc!r}", flush=True)
+            time.sleep(1.0)
+
+
 def serve_web(
     dist_dir: Path,
     port: int,
@@ -105,7 +126,8 @@ def serve_web(
     # (one server per process, so this is not shared state in practice).
     _SpaHandler.ui_lookup = staticmethod(ui_lookup) if ui_lookup else None
     httpd = _ThreadingServer(("127.0.0.1", port), handler)
-    thread = threading.Thread(target=httpd.serve_forever, name="xu-web", daemon=True)
+    thread = threading.Thread(target=_serve_forever, args=(httpd,), name="xu-web", daemon=True)
     thread.start()
     print(f"[xu-brain] webui http://127.0.0.1:{port} (root {dist_dir.resolve()})", flush=True)
+    return thread
     return thread

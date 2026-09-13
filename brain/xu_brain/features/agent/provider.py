@@ -73,6 +73,37 @@ class StreamEvent:
     retryable: bool = False  # True for transient/network/5xx; False for 4xx request errors
 
 
+def _flush_tool_buffers(
+    buffers: dict[int | str, dict[str, str]], flushed: set[int | str]
+) -> list[StreamEvent]:
+    """Emit each buffered [OI] tool call at most once.
+
+    Called on a finish_reason chunk *and* on ``[DONE]``/EOF: a relay that ends
+    the stream without a finish_reason would otherwise drop the call the model
+    made. ``flushed`` records the buffer keys already emitted so a repeated
+    finish_reason chunk cannot re-emit them — the loop would then write the
+    same ``tool_call_id`` twice and append two ``tool`` rows for it.
+    """
+    events: list[StreamEvent] = []
+    for key, buf in buffers.items():
+        if key in flushed or not buf["id"]:
+            continue
+        args = buf["args"]
+        if args:
+            try:
+                json.loads(args)
+            except ValueError:
+                # Merged/corrupt arguments must never reach a tool or the
+                # conversation history: relays reject such requests with an
+                # empty stream and the whole turn poisons.
+                continue
+        flushed.add(key)
+        events.append(
+            StreamEvent(tool_call=ToolCall(id=buf["id"], name=buf["name"], arguments=args))
+        )
+    return events
+
+
 @dataclass
 class Provider:
     id: str
@@ -101,6 +132,22 @@ class KeychainLike(Protocol):
 _CB_THRESHOLD = 3  # consecutive transient failures before opening the breaker
 _CB_COOLDOWN = 30.0  # seconds to skip a tripped provider before retrying
 
+REASONING_EFFORTS: tuple[str, ...] = (
+    "off", "minimal", "low", "medium", "high", "xhigh", "max",
+)
+
+# Anthropic has no `reasoning_effort`; thinking is an explicit token budget.
+# These are the same numbers the relay uses for the levels it knows, so a pick
+# means the same thing whether Xu or the relay performs the translation. `max`
+# is Xu's own extension (the relay's table stops at `xhigh`).
+_EFFORT_BUDGET: dict[str, int] = {
+    "minimal": 0,
+    "low": 2048,
+    "medium": 8192,
+    "high": 16384,
+    "xhigh": 32768,
+    "max": 65536,
+}
 
 
 # ---------------------------------------------------------------------------
@@ -351,6 +398,7 @@ class ProviderManager:
         tools: list[dict[str, Any]] | None = None,
         *,
         max_tokens: int | None = None,
+        reasoning_effort: str | None = None,
         signal: asyncio.Event | None = None,
     ) -> AsyncIterator[StreamEvent]:
         if self._breaker_open(provider.id):
@@ -364,6 +412,7 @@ class ProviderManager:
         if provider.type == "anthropic-compatible":
             async for ev in _anthropic_stream(
                 provider, model, messages, tools, max_tokens, self, signal,
+                reasoning_effort=reasoning_effort,
                 client=self._client,
             ):
                 if ev.error and ev.retryable:
@@ -372,6 +421,7 @@ class ProviderManager:
         else:
             async for ev in _openai_stream(
                 provider, model, messages, tools, max_tokens, self, signal,
+                reasoning_effort=reasoning_effort,
                 client=self._client,
             ):
                 if ev.error and ev.retryable:
@@ -477,6 +527,7 @@ async def _openai_stream(
     mgr: ProviderManager,
     signal: asyncio.Event | None,
     *,
+    reasoning_effort: str | None = None,
     client: httpx.AsyncClient | None = None,
 ) -> AsyncIterator[StreamEvent]:
     url = provider.base_url.rstrip("/") + "/chat/completions"
@@ -495,9 +546,16 @@ async def _openai_stream(
         body["tools"] = tools
     if max_tokens:
         body["max_tokens"] = max_tokens
+    if reasoning_effort:
+        # Sent verbatim: the ladder (off…max) is the union of what the
+        # providers behind a relay accept, and each one reads the levels it
+        # knows. Translating here would mean guessing which provider will
+        # serve the request — a relay may pick a different one per attempt.
+        body["reasoning_effort"] = reasoning_effort
     # Buffer by call id, not index: some relays reuse index 0 for parallel calls.
     tool_buffers: dict[int | str, dict[str, str]] = {}
     call_keys: dict[int, int | str] = {}  # stream index -> current buffer key
+    flushed: set[int | str] = set()  # buffer keys already emitted (once-only)
     _owns = client is None
     if _owns:
         client = httpx.AsyncClient(timeout=httpx.Timeout(connect=15.0, read=300.0, write=30.0))
@@ -577,27 +635,17 @@ async def _openai_stream(
                         if fn.get("arguments"):
                             buf["args"] += fn["arguments"]
                 if choice.get("finish_reason"):
-                    for buf in tool_buffers.values():
-                        if not buf["id"]:
-                            continue
-                        args = buf["args"]
-                        if args:
-                            try:
-                                json.loads(args)
-                            except ValueError:
-                                # Merged/corrupt arguments must never reach a
-                                # tool or the conversation history: relays
-                                # reject such requests with an empty stream and
-                                # the whole turn poisons.
-                                continue
-                        yield StreamEvent(
-                            tool_call=ToolCall(
-                                id=buf["id"], name=buf["name"], arguments=args
-                            )
-                        )
+                    for ev in _flush_tool_buffers(tool_buffers, flushed):
+                        yield ev
                     yield StreamEvent(stop_reason=_map_stop_reason(choice["finish_reason"]))
                 if chunk.get("usage"):
                     yield StreamEvent(usage=chunk["usage"])
+            # The stream ended — on [DONE] or on EOF without it — but a relay
+            # may never send a finish_reason chunk. Flush the buffered calls
+            # here or the model's call vanishes: the loop then sees no tool
+            # calls and ends the turn with "model returned no text this turn".
+            for ev in _flush_tool_buffers(tool_buffers, flushed):
+                yield ev
     except httpx.HTTPError as exc:
         yield StreamEvent(error=str(exc), stop_reason=StopReason.ERROR, retryable=True)
     finally:
@@ -619,6 +667,7 @@ async def _anthropic_stream(
     mgr: ProviderManager,
     signal: asyncio.Event | None,
     *,
+    reasoning_effort: str | None = None,
     client: httpx.AsyncClient | None = None,
 ) -> AsyncIterator[StreamEvent]:
     url = provider.base_url.rstrip("/") + "/v1/messages"
@@ -639,6 +688,14 @@ async def _anthropic_stream(
         "max_tokens": max_tokens or 4096,
         "stream": True,
     }
+    # Anthropic has no `reasoning_effort`: thinking is an explicit token
+    # budget, and while it is on the API mandates temperature=1 and forbids
+    # top_p. The ladder maps onto the same budgets a relay in front uses for
+    # those levels, so one pick means one thing end to end.
+    budget = _EFFORT_BUDGET.get(reasoning_effort or "", 0)
+    if budget > 0:
+        body["thinking"] = {"type": "enabled", "budget_tokens": budget}
+        body["max_tokens"] = max(max_tokens or 4096, budget + 4096)
     if sys_msgs:
         body["system"] = "\n\n".join(str(s) for s in sys_msgs)
     if tools:
@@ -741,6 +798,15 @@ async def _anthropic_stream(
                             "completion_tokens": out,
                             "total_tokens": inp + out,
                         })
+            # The stream ended — on [DONE] or on EOF without it — but the
+            # gateway may never send content_block_stop. Flush the open tool
+            # block here or the call vanishes (same failure as the [OI] path).
+            if cur_tool is not None:
+                yield StreamEvent(
+                    tool_call=ToolCall(
+                        id=cur_tool["id"], name=cur_tool["name"], arguments=cur_tool["args"]
+                    )
+                )
     except httpx.HTTPError as exc:
         yield StreamEvent(error=str(exc), stop_reason=StopReason.ERROR, retryable=True)
     finally:

@@ -100,11 +100,11 @@ def test_documented_core_methods_still_exist() -> None:
     """
     plugin_provided = _plugin_provided()
     events = {
-        "turn.started", "turn.delta", "turn.reasoning", "turn.tool", "turn.notice",
-        "turn.queue", "turn.dequeue", "queue.cancelled", "turn.approval",
-        "turn.approval_resolved", "turn.finished", "turn.failed", "memory.captured",
-        "context.updated", "state.updated", "memory.updated", "status.updated",
-        "session.updated", "compaction.started", "compaction.done",
+        "turn.started", "turn.delta", "turn.reasoning", "turn.tool", "turn.guard",
+        "turn.notice", "turn.queue", "turn.dequeue", "queue.cancelled",
+        "turn.approval", "turn.approval_resolved", "turn.finished", "turn.failed",
+        "memory.captured", "context.updated", "state.updated", "memory.updated",
+        "status.updated", "session.updated", "compaction.started", "compaction.done",
         "subagent.activity", "subagent.delta", "todo.updated",
     }
     stale = sorted(set(_documented()) - _registered_names() - plugin_provided - events)

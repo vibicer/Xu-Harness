@@ -6,32 +6,36 @@ the registry enforces, in order:
 
 1. **circuit breaker** — a tool tripped this turn is short-circuited;
 2. **approval gate** — risky/always tools block on the user;
-3. **concurrency limit** — terminal/web tools are serialized per
-   class (a global sem per concurrency-class);
+3. **concurrency limit** — network/IO tools are serialized per class
+   (a global sem per concurrency-class); `bash` is excluded, see
+   ``_CONCURRENCY_CLASSES``;
 4. **execution** — the tool runs, output is capped before hitting the model.
 
 Disabled toolsets are never imported (startup stays fast).
 """
+
 from __future__ import annotations
 
 import asyncio
 import re
 import time
 from dataclasses import dataclass
-
 from typing import Any, Callable
 
 from ...core.bus import HookBus
-from .schema import validation_error
-
-from ...core.governance import ApprovalLevel, ApprovalManager, TIMEOUT_REASON
+from ...core.governance import TIMEOUT_REASON, ApprovalLevel, ApprovalManager
 from .base import Tool, ToolContext, ToolResult
+from .logmeta import NOTE_ARG, clean_note, tool_args
+from .schema import validation_error
 
 # Default output cap (chars) before truncation hits the model.
 DEFAULT_OUTPUT_CAP = 16_000
 # Per-toolset concurrency classes: tools in the same class serialize.
+# `bash` is deliberately NOT here: each session owns its own shell and
+# `ShellSession._lock` already serializes calls within a session, so a
+# global class would only let one session's long command block bash in
+# every other session.
 _CONCURRENCY_CLASSES: dict[str, str] = {
-    "bash": "terminal",
     "web_search": "web",
     "web_extract": "web",
     "github": "net",
@@ -42,8 +46,9 @@ _CONCURRENCY_CLASSES: dict[str, str] = {
     "browse": "browser",
     "screenshot": "browser",
     "eval": "cpu",
+    "git": "io",
+    "undo": "io",
 }
-
 
 @dataclass
 class _BreakerState:
@@ -148,24 +153,52 @@ class ToolRegistry:
                 return ov[tool.toolset]
         return self.tool_enabled(name)
 
-
     def names(self) -> list[str]:
         return list(self._tools)
 
-    def schemas_for_model(self, session_id: str | None = None) -> list[dict[str, Any]]:
+    def schemas_for_model(
+        self, session_id: str | None = None, allowed_tools: list[str] | set[str] | None = None
+    ) -> list[dict[str, Any]]:
         """OpenAI-style tool schemas: ``{type:"function", function:{name,description,parameters}}``.
 
         A tool's ``schema`` field is the *parameters* JSON-Schema only; this wraps it
         in the OpenAI/Anthropic function envelope (Anthropic translation happens in
         the provider client). Tools a session disabled are not offered to that
-        session's model at all."""
+        session's model at all. If ``allowed_tools`` is provided (e.g. from an
+        orchestration preset node), it can contain individual tool names or
+        toolsets; only matching tools are offered."""
+        allow_set: set[str] | None = set(allowed_tools) if allowed_tools is not None else None
         out: list[dict[str, Any]] = []
         for name, tool in self._tools.items():
             if not self.tool_enabled_for(name, session_id):
                 continue
+            if allow_set is not None:
+                if name not in allow_set and tool.toolset not in allow_set:
+                    continue
             params = dict(tool.schema)
             params.setdefault("type", "object")
-            params.setdefault("properties", {})
+            # Copy nested properties too: never mutate a plugin's own schema.
+            params["properties"] = {
+                **params.get("properties", {}),
+                NOTE_ARG: {
+                    "type": "string",
+                    "description": (
+                        "Include a short plain-language action description for this specific call "
+                        "in the user's language, e.g. 'Check frontend types'. "
+                        "Shown in the tool log, not executed. No secrets or raw commands."
+                    ),
+                    "maxLength": 160,
+                },
+            }
+            # Bash needs an action description, not a command-as-title. Only
+            # require it in the model-facing copy; tool execution stays compatible
+            # with older callers and other tools keep their existing schemas.
+            if name == "bash":
+                required = list(params.get("required", []))
+                if NOTE_ARG not in required:
+                    required.append(NOTE_ARG)
+                params["required"] = required
+                params["properties"][NOTE_ARG]["minLength"] = 1
             out.append(
                 {
                     "type": "function",
@@ -229,21 +262,73 @@ class ToolRegistry:
     async def run(
         self, tool_name: str, args: dict[str, Any], ctx: ToolContext, *, emit
     ) -> ToolResult:
+        """Keep display metadata separate from tool inputs and approval decisions."""
+        note = clean_note(args.get(NOTE_ARG))
+        args = tool_args(args)
+        tool = self._tools.get(tool_name)
+        cwd = getattr(ctx, "cwd", "")
+        locate = getattr(tool, "execution_cwd", None)
+        if callable(locate):
+            cwd = locate(ctx)
+        metadata = {"cwd": cwd} if cwd else {}
+        if note:
+            metadata["note"] = note
+        settled = False
+
+        async def emit_chip(event: str, **kw: Any) -> None:
+            nonlocal settled
+            if event == "turn.tool":
+                kw = {**kw, **metadata}
+                settled = kw.get("status") in ("ok", "error")
+            await emit(event, **kw)
+
+        result = await self._run(tool_name, args, ctx, emit=emit_chip)
+        # Denied, disabled and unknown tools return before the execution events.
+        if not settled:
+            await emit_chip(
+                "turn.tool",
+                tool=tool_name,
+                args=summarize_args(args),
+                status="error" if result.error else "ok",
+                output=self._cap(result.output)[:2000],
+            )
+        return result
+
+    async def _run(
+        self,
+        tool_name: str,
+        args: dict[str, Any],
+        ctx: ToolContext,
+        *,
+        emit: Any,
+    ) -> ToolResult:
         """Run a tool under full governance. ``emit`` is the event emitter
         (``turn.tool`` updates: running → ok/error)."""
         tool = self._tools.get(tool_name)
         if tool is None:
             return ToolResult.err(f"unknown tool: {tool_name}")
-        pre = await self.hooks.waterfall("tool.pre_execute", {
-            "tool": tool_name, "args": args, "ctx": ctx,
-        })
+        pre = await self.hooks.waterfall(
+            "tool.pre_execute",
+            {
+                "tool": tool_name,
+                "args": args,
+                "ctx": ctx,
+            },
+        )
         if pre.get("handled"):
             result = pre.get("result")
-            return result if isinstance(result, ToolResult) else ToolResult.err(
-                str(pre.get("reason", "tool execution denied"))
+            return (
+                result
+                if isinstance(result, ToolResult)
+                else ToolResult.err(str(pre.get("reason", "tool execution denied")))
             )
         sid = getattr(ctx, "session_id", None) or None
         ov = self.session_overrides(sid) if sid else {}
+        preset_node = ctx.config.get("preset_node") if hasattr(ctx, "config") and isinstance(ctx.config, dict) else None
+        if preset_node and preset_node.get("tools") is not None:
+            allowed = set(preset_node.get("tools") or [])
+            if tool_name not in allowed and tool.toolset not in allowed:
+                return ToolResult.err(f"tool not allowed by agent preset: {tool_name}")
         if not self.tool_enabled_for(tool_name, sid):
             if ov.get(tool_name) is False:
                 return ToolResult.err(f"tool disabled for this session: {tool_name}")
@@ -255,7 +340,6 @@ class ToolRegistry:
                 else f"toolset disabled: {tool.toolset}"
             )
             return ToolResult.err(why)
-
         breaker = self._breakers.get(tool_name)
         if breaker is not None and breaker.tripped:
             return ToolResult.err(f"circuit breaker tripped: {breaker.reason}")
@@ -280,9 +364,7 @@ class ToolRegistry:
         klass = _CONCURRENCY_CLASSES.get(tool_name)
         sem = self._sem(klass) if klass else None
         started = time.perf_counter()
-        await emit(
-            "turn.tool", tool=tool_name, args=_summarize_args(args), status="running"
-        )
+        await emit("turn.tool", tool=tool_name, args=_summarize_args(args), status="running")
         try:
             if sem is not None:
                 async with sem:
@@ -313,13 +395,12 @@ class ToolRegistry:
         chip_output = out.raw if isinstance(out.raw, str) else None
         # A tool may tag its chip with extra fields (e.g. delegate's
         # subagent_run, so the shell can open that sub-agent's activity).
-        extra = {k: v for k, v in out.meta.items()
-                 if k in _CHIP_META and v is not None}
+        extra = {k: v for k, v in out.meta.items() if k in _CHIP_META and v is not None}
         await emit(
             "turn.tool",
             tool=tool_name,
             args=_summarize_args(args),
-            status="ok",
+            status="error" if out.error else "ok",
             elapsed=round(elapsed, 3),
             output=self._cap(chip_output)[:2000] if chip_output else None,
             **extra,
@@ -340,9 +421,15 @@ class ToolRegistry:
             raw=out.raw,
             meta={**out.meta, "elapsed": round(elapsed, 3)},
         )
-        post = await self.hooks.waterfall("tool.post_execute", {
-            "tool": tool_name, "args": args, "ctx": ctx, "result": result,
-        })
+        post = await self.hooks.waterfall(
+            "tool.post_execute",
+            {
+                "tool": tool_name,
+                "args": args,
+                "ctx": ctx,
+                "result": result,
+            },
+        )
         candidate = post.get("result", result)
         return candidate if isinstance(candidate, ToolResult) else result
 
@@ -367,7 +454,7 @@ def summarize_args(args: dict[str, Any]) -> str:
     """
     parts = []
     for k, v in args.items():
-        if k == "self":
+        if k in ("self", NOTE_ARG):
             continue
         # `edit` takes only a patch, whose first line is `[path#TAG]` — surface
         # the path so the chip can render a file tab instead of patch guts.

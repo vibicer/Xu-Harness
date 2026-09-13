@@ -339,6 +339,102 @@ class AskTool(Tool):
         return ToolResult.ok(str(answer), raw=answer)
 
 
+def _resolve_known_tool_catalogs(ctx: ToolContext) -> tuple[set[str], set[str]]:
+    known_tools: set[str] = set()
+    known_toolsets: set[str] = set()
+    agent = getattr(ctx, "agent", None)
+    registry = getattr(agent, "registry", None) if agent else None
+    if registry is not None:
+        try:
+            known_tools = set(registry.names())
+            known_toolsets = {ts["toolset"] for ts in registry.toolsets() if "toolset" in ts}
+        except Exception:
+            pass
+    if not known_tools or not known_toolsets:
+        try:
+            from xu_brain.features.tools import all_tools
+            for t in all_tools():
+                known_tools.add(t.name)
+                ts = getattr(t, "toolset", "")
+                if ts:
+                    known_toolsets.add(ts)
+        except Exception:
+            pass
+    return known_tools, known_toolsets
+
+
+def _resolve_known_skills(ctx: ToolContext) -> set[str]:
+    known_skills: set[str] = set()
+    skills = getattr(ctx, "skills", None)
+    if skills is not None and hasattr(skills, "list"):
+        try:
+            known_skills = {s["id"] for s in skills.list(all=True) if "id" in s}
+        except Exception:
+            pass
+    return known_skills
+
+
+def _validate_preset_node(
+    node: Any,
+    path: str,
+    known_tools: set[str],
+    known_toolsets: set[str],
+    known_skills: set[str],
+) -> list[str]:
+    errors: list[str] = []
+    if not isinstance(node, dict):
+        return [f"{path} must be a dictionary object"]
+    node_name = str(node.get("name") or "agent")
+    role = node.get("role")
+    if role is not None and role not in ("orchestrator", "agent"):
+        errors.append(f"{path} ({node_name}): role must be 'orchestrator' or 'agent', got '{role}'")
+
+    tools = node.get("tools")
+    if tools is not None:
+        if not isinstance(tools, list):
+            errors.append(f"{path} ({node_name}): tools must be a list of strings or null")
+        else:
+            for t in tools:
+                if not isinstance(t, str):
+                    errors.append(f"{path} ({node_name}): tools item {t!r} is not a string")
+                elif known_tools and known_toolsets:
+                    if t not in known_tools and t not in known_toolsets:
+                        ts_list = ", ".join(sorted(known_toolsets))
+                        errors.append(
+                            f"{path} ({node_name}): unknown tool or toolset '{t}'. "
+                            f"Must be a registered tool name or toolset. Valid toolsets: {ts_list}"
+                        )
+
+    skills = node.get("skills")
+    if skills is not None:
+        if not isinstance(skills, list):
+            errors.append(f"{path} ({node_name}): skills must be a list of strings or null")
+        else:
+            for s in skills:
+                if not isinstance(s, str):
+                    errors.append(f"{path} ({node_name}): skills item {s!r} is not a string")
+                elif known_skills and s not in known_skills:
+                    errors.append(f"{path} ({node_name}): unknown skill '{s}'")
+
+    children = node.get("children")
+    if children is not None:
+        if not isinstance(children, list):
+            errors.append(f"{path} ({node_name}): children must be a list")
+        else:
+            for i, child in enumerate(children):
+                c_name = child.get("name", i) if isinstance(child, dict) else i
+                errors.extend(
+                    _validate_preset_node(
+                        child,
+                        f"{path}.children[{c_name}]",
+                        known_tools,
+                        known_toolsets,
+                        known_skills,
+                    )
+                )
+    return errors
+
+
 class PresetTool(Tool):
     name = "preset_create"
     toolset = "orchestration"
@@ -346,8 +442,10 @@ class PresetTool(Tool):
         "Create or update an orchestration preset (an agent composition: a "
         "Main-orchestrator root plus sub-agents), stored so it can be bound to "
         "a session via set_session_preset. Pass a JSON `tree` for the root node "
-        "and an optional existing preset `id` to overwrite it. Returns the saved "
-        "preset id and agent count."
+        "and an optional existing preset `id` to overwrite it. Each node's `tools` "
+        "field must be an array of valid toolsets (e.g. 'file', 'web', 'browser', "
+        "'search', 'terminal', 'plan', 'orchestration') or individual tool names "
+        "('read', 'edit'), or null to inherit. Returns the saved preset id and agent count."
     )
     approval = ApprovalLevel.RISKY
     schema = {
@@ -360,8 +458,8 @@ class PresetTool(Tool):
                     "root AgentNode: {role:'orchestrator', persona, model?, "
                     "fallbacks?, skills?, tools?, memory?, children:[{name, "
                     "role:'agent', persona, model?, fallbacks?, skills?, tools?, "
-                    "memory?}]}. null = inherit. `fallbacks` = ordered backup "
-                    "model ids tried when `model` fails."
+                    "memory?}]}. null = inherit. `tools` is a list of valid toolset names "
+                    "(e.g. 'file', 'web', 'browser', 'search') or tool names ('read', 'edit')."
                 ),
             },
             "id": {"type": "string", "description": "existing preset id to overwrite (omit to create new)"},
@@ -380,6 +478,15 @@ class PresetTool(Tool):
         store = getattr(ctx, "presets", None)
         if store is None:
             return ToolResult.err("preset store unavailable in this context")
+
+        known_tools, known_toolsets = _resolve_known_tool_catalogs(ctx)
+        known_skills = _resolve_known_skills(ctx)
+        validation_errors = _validate_preset_node(tree, "root", known_tools, known_toolsets, known_skills)
+        if validation_errors:
+            return ToolResult.err(
+                "Validation failed for preset:\n" + "\n".join(f"- {e}" for e in validation_errors)
+            )
+
         try:
             preset = store.upsert(pid, name, tree)
         except Exception as exc:  # noqa: BLE001 — surface a clean tool error
@@ -389,8 +496,6 @@ class PresetTool(Tool):
             f"Bind it to a session with set_session_preset({preset.id}).",
             raw=preset.to_dict(),
         )
-
-
 ask = AskTool()
 delegate = DelegateTool()
 preset_create = PresetTool()

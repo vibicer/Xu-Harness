@@ -37,6 +37,7 @@ def _loop_agent(stream):
         retry_max=lambda: 0,
         retry_interval=lambda: 0,
         session_max_tokens=lambda _sid: None,
+        session_reasoning_effort=lambda _sid: None,
         session_model=lambda _sid: "model",
         vision_model=lambda: None,
         get=lambda _key, default=None: default,
@@ -87,7 +88,10 @@ def test_tool_calls_are_dispatched_whatever_the_stop_reason(finish):
     """A buffered tool call runs even when the provider also claims STOP."""
     calls = {"n": 0}
 
-    async def stream(_provider, _model, _messages, _tools, max_tokens=None, signal=None):
+    async def stream(
+        _provider, _model, _messages, _tools,
+        max_tokens=None, reasoning_effort=None, signal=None,
+    ):
         calls["n"] += 1
         if calls["n"] == 1:
             yield StreamEvent(tool_call=SimpleNamespace(
@@ -121,7 +125,10 @@ def test_plain_stop_without_tool_calls_still_ends_the_turn():
     """The guard must not turn a normal finish into an extra provider round."""
     calls = {"n": 0}
 
-    async def stream(_provider, _model, _messages, _tools, max_tokens=None, signal=None):
+    async def stream(
+        _provider, _model, _messages, _tools,
+        max_tokens=None, reasoning_effort=None, signal=None,
+    ):
         calls["n"] += 1
         yield StreamEvent(delta="just an answer")
         yield StreamEvent(stop_reason=StopReason.STOP)
@@ -213,7 +220,10 @@ def test_rejected_delegate_call_leaves_no_ghost_run():
     also clogged the 60-run pruner, since it never removes running records."""
     calls = {"n": 0}
 
-    async def stream(_provider, _model, _messages, _tools, max_tokens=None, signal=None):
+    async def stream(
+        _provider, _model, _messages, _tools,
+        max_tokens=None, reasoning_effort=None, signal=None,
+    ):
         calls["n"] += 1
         if calls["n"] == 1:
             yield StreamEvent(tool_call=SimpleNamespace(

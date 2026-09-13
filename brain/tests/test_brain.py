@@ -1700,6 +1700,7 @@ class TestLoopReasoning:
             retry_max=lambda: 0,
             retry_interval=lambda: 0,
             session_max_tokens=lambda _sid: None,
+            session_reasoning_effort=lambda _sid: None,
             session_model=lambda _sid: "model",
             get=lambda _key, default=None: default,
             all=lambda: {},
@@ -1780,6 +1781,7 @@ class TestLoopReasoning:
             retry_max=lambda: 1,
             retry_interval=lambda: 0,  # → 1s floor, one countdown tick
             session_max_tokens=lambda _sid: None,
+            session_reasoning_effort=lambda _sid: None,
             session_model=lambda _sid: "model",
             get=lambda _key, default=None: default,
             all=lambda: {},
@@ -1837,6 +1839,7 @@ class TestLoopReasoning:
             retry_max=lambda: 2,
             retry_interval=lambda: 0,
             session_max_tokens=lambda _sid: None,
+            session_reasoning_effort=lambda _sid: None,
             session_model=lambda _sid: "primary",
             model_fallbacks=lambda: ["backup"],
             get=lambda _key, default=None: default,
@@ -1899,6 +1902,7 @@ class TestLoopReasoning:
             retry_max=lambda: 0,
             retry_interval=lambda: 0,
             session_max_tokens=lambda _sid: None,
+            session_reasoning_effort=lambda _sid: None,
             session_model=lambda _sid: "gone",
             model_fallbacks=lambda: ["still-here"],
             get=lambda _key, default=None: default,
@@ -1990,7 +1994,10 @@ class TestToolHistory:
             after_tool=after_tool)
         calls = {"n": 0}
 
-        async def stream(provider, model, messages, tools, max_tokens=None, signal=None):
+        async def stream(
+            provider, model, messages, tools,
+            max_tokens=None, reasoning_effort=None, signal=None,
+        ):
             calls["n"] += 1
             if calls["n"] == 1:
                 yield StreamEvent(reasoning="think: run it")
@@ -2088,7 +2095,10 @@ class TestQueueSend:
         calls = {"n": 0}
         seen: list[list[str]] = []
 
-        async def stream(provider, model, messages, tools, max_tokens=None, signal=None):
+        async def stream(
+            provider, model, messages, tools,
+            max_tokens=None, reasoning_effort=None, signal=None,
+        ):
             calls["n"] += 1
             seen.append([m.get("role") for m in messages if m.get("role") != "system"])
             if calls["n"] == 1:
@@ -2129,6 +2139,99 @@ class TestQueueSend:
         # second request saw: user, assistant(tool_calls), tool, user
         assert "user" in seen[1] and "tool" in seen[1]
 
+    def test_queue_split_anchors_to_this_turn(self, data_home):
+        """Regression: a drained queue must attach its split to THIS turn's
+        assistant row, not a previous turn's user boundary.
+
+        The old scan keyed on the session's *first* user row, so in a session
+        that already had a persisted turn it fired on turn 1's boundary: turn
+        1's assistant + user rows were re-appended to the append-only `display`
+        transcript (duplicating both) while the queued user row — which
+        reaches `display` only through this path — was never written at all.
+        `test_mid_turn_send_is_spliced_at_tool_boundary` only covers a fresh
+        single-turn session, which is why it passed."""
+        from xu_brain.features.agent.loop import Agent
+        from xu_brain.features.session import SessionStore
+        from xu_brain.plugins import PluginBus
+
+        store = SessionStore(data_home)
+        config = Config(data_home)
+        agent = Agent(store, data_home, None, None, ApprovalManager(config),
+                      MemoryStore(data_home), SkillsEngine(data_home),
+                      PluginBus(data_home), config)
+
+        async def noop(*_a, **_k):
+            return None
+
+        async def passthrough(v):
+            return v
+
+        async def after_tool(_n, r):
+            return r
+
+        agent.plugins = SimpleNamespace(
+            on_start=noop, on_message_out=passthrough, before_llm=passthrough,
+            after_tool=after_tool)
+
+        calls = {"n": 0}
+
+        async def stream(
+            provider, model, messages, tools,
+            max_tokens=None, reasoning_effort=None, signal=None,
+        ):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                yield StreamEvent(delta="answer one")  # turn 1: plain reply
+                yield StreamEvent(stop_reason=StopReason.STOP)
+            elif calls["n"] == 2:
+                yield StreamEvent(tool_call=SimpleNamespace(
+                    id="c1", name="bash", arguments='{"cmd":"ls"}'))
+                yield StreamEvent(stop_reason=StopReason.TOOL)
+            else:
+                # turn 2's second request must already carry the queued row
+                assert any(m.get("role") == "user" and m.get("content") == "QUEUED STEER"
+                           for m in messages)
+                yield StreamEvent(delta="answer two")
+                yield StreamEvent(stop_reason=StopReason.STOP)
+
+        agent.providers = SimpleNamespace(
+            resolve=lambda _m, _p=None: ("p", "m"), chat_stream=stream)
+
+        async def run_tool(_n, _a, _ctx, emit=None):
+            await asyncio.sleep(0.05)  # hold the round open so the send lands mid-turn
+            return SimpleNamespace(output="out.txt", error=False, raw="")
+
+        agent.registry = SimpleNamespace(
+            schemas_for_model=lambda _s=None: [], reset_breakers=lambda: None, run=run_tool)
+
+        sess = store.create(cwd=str(data_home))
+
+        async def main():
+            await agent.send(sess.id, "OLD")  # persisted turn 1
+            await asyncio.wait_for(agent._turns[sess.id], 20)
+            await agent.send(sess.id, "NEW")
+            await asyncio.sleep(0.02)  # land inside the tool round
+            turn_id, queued_id = await agent.send(sess.id, "QUEUED STEER")
+            assert turn_id == "" and queued_id
+            await asyncio.wait_for(agent._turns[sess.id], 20)
+
+        asyncio.run(main())
+
+        rows = store.display(sess.id)
+        shown = [(r["role"], r["content"]) for r in rows]
+        users = [r["content"] for r in rows if r["role"] == "user"]
+        assert "QUEUED STEER" in users, f"queued user row missing from display: {shown}"
+        # append-only means a row already shown is never appended again
+        assert len(users) == len(set(users)), f"duplicate user rows in display: {shown}"
+        assistants = [r["content"] for r in rows if r["role"] == "assistant"]
+        assert assistants.count("answer one") == 1, f"turn 1 assistant duplicated: {shown}"
+        # the tool round's step rides the assistant row of THIS turn, i.e. the
+        # one immediately before the splice — never turn 1's assistant
+        qi = next(i for i, r in enumerate(rows) if r["content"] == "QUEUED STEER")
+        before = next(r for r in reversed(rows[:qi]) if r["role"] == "assistant")
+        assert "tool" in [s.get("kind") for s in (before["steps"] or [])], shown
+        assert before["content"] != "answer one", f"split landed on turn 1's row: {shown}"
+
     def test_dequeue_event_fires_on_splice(self, data_home):
         """A queued send spliced at the tool round boundary must emit a
         turn.dequeue event carrying the consumed queued_id + text."""
@@ -2161,7 +2264,10 @@ class TestQueueSend:
         emitted: list[tuple[str, dict]] = []
         captured: dict[str, str] = {}
 
-        async def stream(provider, model, messages, tools, max_tokens=None, signal=None):
+        async def stream(
+            provider, model, messages, tools,
+            max_tokens=None, reasoning_effort=None, signal=None,
+        ):
             calls["n"] += 1
             seen.append([m.get("role") for m in messages if m.get("role") != "system"])
             if calls["n"] == 1:
@@ -2242,7 +2348,10 @@ class TestQueueSend:
         seen: list[list[str]] = []
         ids: dict[str, str] = {}
 
-        async def stream(provider, model, messages, tools, max_tokens=None, signal=None):
+        async def stream(
+            provider, model, messages, tools,
+            max_tokens=None, reasoning_effort=None, signal=None,
+        ):
             calls["n"] += 1
             seen.append([m.get("role") for m in messages if m.get("role") != "system"])
             if calls["n"] == 1:
@@ -3124,7 +3233,10 @@ class TestCompactEngine:
 
         agent = Agent(None, None, None, None, None, None, None, None, None, None)
 
-        def fake_stream(_provider, _model, _msgs, signal=None, max_tokens=None):
+        def fake_stream(
+            _provider, _model, _msgs, signal=None,
+            max_tokens=None, reasoning_effort=None,
+        ):
             async def gen():
                 if summary_text:
                     yield SimpleNamespace(delta=summary_text, reasoning="")
@@ -3287,7 +3399,10 @@ class TestCompactEngineDSH:
         agent = Agent(None, None, None, None, None, None, None, None, None, None)
         streamed = []
 
-        def fake_stream(_provider, _model, _msgs, signal=None, max_tokens=None):
+        def fake_stream(
+            _provider, _model, _msgs, signal=None,
+            max_tokens=None, reasoning_effort=None,
+        ):
             async def gen():
                 if fail_first and not streamed:
                     streamed.append(1)
@@ -3315,7 +3430,10 @@ class TestCompactEngineDSH:
         import asyncio
         agent, sess = self._agent()
         captured = {}
-        def fake_stream(_provider, _model, msgs, signal=None, max_tokens=None):
+        def fake_stream(
+            _provider, _model, msgs, signal=None,
+            max_tokens=None, reasoning_effort=None,
+        ):
             captured["msgs"] = list(msgs)
             async def gen():
                 yield SimpleNamespace(delta="SUMMARY", reasoning="")
@@ -3351,7 +3469,10 @@ class TestCompactEngineDSH:
         sess.messages.insert(1, Message(role="assistant", content=big))
         from types import SimpleNamespace as SNS
         captured = {}
-        def fake_stream(_provider, _model, msgs, signal=None, max_tokens=None):
+        def fake_stream(
+            _provider, _model, msgs, signal=None,
+            max_tokens=None, reasoning_effort=None,
+        ):
             captured["msgs"] = list(msgs)
             async def gen():
                 yield SNS(delta="SUM", reasoning="")
@@ -3374,7 +3495,7 @@ class TestCompactEngineDSH:
 
         agent = Agent(None, None, None, None, None, None, None, None, None, None)
         calls = {"n": 0}
-        def fake_stream(_p, _m, msgs, signal=None, max_tokens=None):
+        def fake_stream(_p, _m, msgs, signal=None, max_tokens=None, reasoning_effort=None):
             calls["n"] += 1
             # returns a huge summary so "after" never < "before"
             payload = "S" * 100000
@@ -4253,7 +4374,7 @@ class TestCompactionSummaryQuality:
         agent = Agent(None, None, None, None, None, None, None, None, None, None)
         calls = {"n": 0, "max_tokens": None}
 
-        def fake_stream(_p, _m, msgs, signal=None, max_tokens=None):
+        def fake_stream(_p, _m, msgs, signal=None, max_tokens=None, reasoning_effort=None):
             calls["n"] += 1
             calls["max_tokens"] = max_tokens
             calls["msgs"] = list(msgs)
@@ -4324,6 +4445,40 @@ class TestCompactionSummaryQuality:
         assert len(checkpoints) == 1, f"{len(checkpoints)} checkpoints survived"
         assert "OLD" not in checkpoints[0].content, "stale checkpoint copied forward"
 
+    def test_prior_checkpoint_is_fed_to_the_summarizer(self):
+        """The prior checkpoint is written as a `system` row, so it is in
+        neither `shadowed` (non-system rows only) nor the retained tail
+        (`_persisted_msgs` drops it). It was therefore absent from the
+        summarizer's input on every cycle: everything the previous checkpoint
+        captured was silently lost, and the instruction's merge clause ("If
+        the conversation already contains a <compacted-summary> block") could
+        never fire because its precondition was never in the prompt.
+
+        `test_prior_checkpoint_is_replaced_not_stacked` pins the same rule with
+        the checkpoint as an ASSISTANT row — a shape the writer never produces
+        — so it never exercised this path."""
+        import asyncio
+
+        from xu_brain.features.session import Message
+
+        token = "PRIOR-TOKEN-7f3a9c"
+        agent, sess, calls = self._agent()
+        prior = Message(role="system", content=(
+            "[conversation summary]\n"
+            f"<compacted-summary>\n{token}\n</compacted-summary>"))
+        # Tail position: the checkpoint survives the cut, so the summarizer
+        # only sees it if it is explicitly fed back.
+        sess.messages = list(sess.messages) + [prior, Message(role="user", content="next")]
+        r = asyncio.run(agent.compress_session("s1"))
+        assert r["ok"] is True, r
+        blob = "\n".join(str(m.get("content")) for m in calls["msgs"])
+        assert token in blob, "prior checkpoint not fed to the summarizer"
+        # ...and it stays a summarizer-only input: the rewritten history keeps
+        # exactly one checkpoint (the new one) and never replays the stale one.
+        checkpoints = [m for m in sess.messages if "<compacted-summary>" in str(m.content)]
+        assert len(checkpoints) == 1, f"{len(checkpoints)} checkpoints survived"
+        assert token not in str(checkpoints[0].content), "stale checkpoint replayed"
+
     def test_repeated_compaction_does_not_falsely_abandon(self):
         """Regression: after 2-3 compactions the shrink check used to read
         "no shrink" and abort. Root cause: `before` counted prior checkpoint
@@ -4342,7 +4497,7 @@ class TestCompactionSummaryQuality:
     def test_auto_path_also_replaces_prior_checkpoint(self):
         """Same rule on the live in-place list the auto path splices."""
         import asyncio
-        agent, sess, _calls = self._agent()
+        agent, sess, calls = self._agent()
         agent.config = SimpleNamespace(
             get=lambda k, default=None: 5 if k == "context_length" else default)
         messages = [
@@ -4353,6 +4508,11 @@ class TestCompactionSummaryQuality:
         checkpoints = [m for m in messages if "<compacted-summary>" in str(m.get("content", ""))]
         assert len(checkpoints) == 1, f"{len(checkpoints)} checkpoints in live list"
         assert "OLD" not in checkpoints[0]["content"]
+        # ...and the pruned prior checkpoint was fed to the summarizer (it is a
+        # `system` row, so nothing else would carry its content forward)
+        blob = "\n".join(str(m.get("content")) for m in calls["msgs"])
+        assert "<compacted-summary>" in blob and "OLD" in blob, \
+            "prior checkpoint not fed to the summarizer"
         # the persona system row survives; only checkpoints are pruned
         assert any(m.get("content") == "PERSONA" for m in messages)
 class TestEmptyTextGuard:
@@ -4377,7 +4537,10 @@ class TestEmptyTextGuard:
     def test_thinking_only_turn_persists_error_marker(self, data_home):
         store, agent = self._agent(data_home)
 
-        async def stream(provider, model, messages, tools, max_tokens=None, signal=None):
+        async def stream(
+            provider, model, messages, tools,
+            max_tokens=None, reasoning_effort=None, signal=None,
+        ):
             yield StreamEvent(reasoning="pondering deeply...")
             yield StreamEvent(stop_reason=StopReason.STOP)
 
@@ -4398,7 +4561,10 @@ class TestEmptyTextGuard:
     def test_token_limit_stop_persists_limit_marker(self, data_home):
         store, agent = self._agent(data_home)
 
-        async def stream(provider, model, messages, tools, max_tokens=None, signal=None):
+        async def stream(
+            provider, model, messages, tools,
+            max_tokens=None, reasoning_effort=None, signal=None,
+        ):
             yield StreamEvent(reasoning="a very long chain of thought")
             yield StreamEvent(stop_reason=StopReason.LENGTH)
 
@@ -4418,7 +4584,10 @@ class TestEmptyTextGuard:
         """The guard must not mark a turn that actually produced text."""
         store, agent = self._agent(data_home)
 
-        async def stream(provider, model, messages, tools, max_tokens=None, signal=None):
+        async def stream(
+            provider, model, messages, tools,
+            max_tokens=None, reasoning_effort=None, signal=None,
+        ):
             yield StreamEvent(reasoning="short thought")
             yield StreamEvent(delta="the answer")
             yield StreamEvent(stop_reason=StopReason.STOP)
@@ -4455,7 +4624,10 @@ class TestCrashStatus:
         agent.registry = SimpleNamespace(
             schemas_for_model=lambda _s=None: [], reset_breakers=lambda: None)
 
-        async def stream(provider, model, messages, tools, max_tokens=None, signal=None):
+        async def stream(
+            provider, model, messages, tools,
+            max_tokens=None, reasoning_effort=None, signal=None,
+        ):
             yield StreamEvent(reasoning="thinking before the crash")
             yield StreamEvent(delta="partial")
             yield StreamEvent(stop_reason=StopReason.STOP)

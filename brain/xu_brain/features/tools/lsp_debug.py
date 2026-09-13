@@ -64,7 +64,11 @@ class _JsonRpcStdio:
             *self._cmd,
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
+            # DEVNULL, not PIPE: nothing ever reads stderr, so a server that
+            # fills the ~64 KB pipe buffer (rust-analyzer progress output, a
+            # noisy adapter) blocks in write() forever and every later request
+            # times out until the idle reap. Nothing surfaces stderr anyway.
+            stderr=asyncio.subprocess.DEVNULL,
             cwd=self._cwd,
         )
         asyncio.create_task(self._read_loop())
@@ -294,23 +298,23 @@ class LspTool(Tool):
     schema = {
         "type": "object",
         "properties": {
-            "action": {"type": "string", "enum": ["hover", "definition", "references", "rename", "code_actions", "diagnostics"]},
+            "action": {"type": "string", "enum": ["hover", "definition", "references", "rename", "code_actions", "diagnostics", "document_symbols", "workspace_symbols"]},
             "file": {"type": "string"},
             "line": {"type": "integer", "description": "1-indexed"},
             "symbol": {"type": "string"},
             "lang": {"type": "string"},
             "new_name": {"type": "string"},
         },
-        "required": ["action", "file"],
+        "required": ["action"],
     }
 
     async def run(self, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
         action = str(args.get("action", "hover"))
         file = str(args.get("file", ""))
         lang = str(args.get("lang", _guess_lang(file)))
-        if not file:
+        if not file and action != "workspace_symbols":
             return ToolResult.err("file required")
-        fp = Path(file)
+        fp = Path(file) if file else Path(ctx.cwd)
         if not fp.is_absolute():
             fp = Path(ctx.cwd) / fp
         srv = _lsp_server(lang, ctx)
@@ -352,6 +356,13 @@ class LspTool(Tool):
                 return ToolResult.ok(
                     _render_diags(diags) if diags else "(no diagnostics)", raw=diags
                 )
+            if action == "document_symbols":
+                r = await srv.call("textDocument/documentSymbol", {"textDocument": {"uri": uri}})
+                return ToolResult.ok(json.dumps(r, indent=2), raw=r)
+            if action == "workspace_symbols":
+                query_str = str(args.get("symbol") or args.get("query") or "")
+                r = await srv.call("workspace/symbol", {"query": query_str})
+                return ToolResult.ok(json.dumps(r, indent=2), raw=r)
         except Exception as e:  # noqa: BLE001
             return ToolResult.err(f"lsp error: {e}")
         return ToolResult.err(f"unsupported action: {action}")
@@ -484,7 +495,11 @@ class _DapStdio:
             *self._cmd,
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
+            # DEVNULL, not PIPE — see _JsonRpcStdio._ensure: an unread stderr
+            # pipe deadlocks the adapter once it fills. The debuggee's own
+            # output arrives as DAP `output` events (console=internalConsole),
+            # not on the adapter's stderr.
+            stderr=asyncio.subprocess.DEVNULL,
             cwd=self._cwd,
         )
         asyncio.create_task(self._read_loop())

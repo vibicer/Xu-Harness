@@ -26,6 +26,19 @@ def _resolve(cwd: str, path: str) -> Path:
         p = Path(cwd) / p
     return p.expanduser()
 
+def _get_backup_mgr(ctx: ToolContext) -> Any:
+    mgr = getattr(ctx, "backups", None)
+    if mgr is not None:
+        return mgr
+    data_home = getattr(ctx, "data_home", None)
+    if data_home:
+        try:
+            from ..backup import BackupManager
+            return BackupManager(data_home)
+        except Exception:
+            return None
+    return None
+
 
 
 def _snapshot_tag(text: str) -> str:
@@ -112,16 +125,41 @@ class FileWriteTool(Tool):
         append = bool(args.get("append", False))
         if not path_str:
             return ToolResult.err("path required")
+        backup_mgr = _get_backup_mgr(ctx)
         # SQLite row upsert: the suffix sits on the FILE part (`db.sqlite:t:k`),
         # so test the head before the colon — not the whole string.
         head, _, _tail = path_str.partition(":")
         if ":" in path_str and head.endswith((".sqlite", ".sqlite3", ".db", ".db3")):
-            return _sqlite_write(ctx, path_str, content)
+            sqlite_target = _resolve(ctx.cwd, head)
+            tok = None
+            if backup_mgr:
+                tok = backup_mgr.record_pre_state(
+                    getattr(ctx, "session_id", ""),
+                    getattr(ctx, "turn_id", ""),
+                    sqlite_target,
+                    "write",
+                    ctx.cwd,
+                )
+            res = _sqlite_write(ctx, path_str, content)
+            if backup_mgr and tok and not res.error:
+                backup_mgr.commit_post_state(tok)
+            return res
         target = _resolve(ctx.cwd, path_str)
+        tok = None
+        if backup_mgr:
+            tok = backup_mgr.record_pre_state(
+                getattr(ctx, "session_id", ""),
+                getattr(ctx, "turn_id", ""),
+                target,
+                "write",
+                ctx.cwd,
+            )
         target.parent.mkdir(parents=True, exist_ok=True)
         mode = "a" if append else "w"
         with open(target, mode, encoding="utf-8") as f:
             f.write(content)
+        if backup_mgr and tok:
+            backup_mgr.commit_post_state(tok)
         note = await _diagnostics_note(target, ctx)
         return ToolResult.ok(f"wrote {len(content)} bytes → {target}{note}", raw=str(target))
 
@@ -220,7 +258,19 @@ class FileEditTool(Tool):
                 "target lines instead of retrying the same patch"
             )
 
+        backup_mgr = _get_backup_mgr(ctx)
+        tok = None
+        if backup_mgr:
+            tok = backup_mgr.record_pre_state(
+                getattr(ctx, "session_id", ""),
+                getattr(ctx, "turn_id", ""),
+                target,
+                "edit",
+                ctx.cwd,
+            )
         target.write_text(new_text, "utf-8")
+        if backup_mgr and tok:
+            backup_mgr.commit_post_state(tok)
         note = await _diagnostics_note(target, ctx)
         return ToolResult.ok(
             f"edited {target.name}: {touched} line(s) changed{note}", raw=str(target)
@@ -244,6 +294,51 @@ read = FileReadTool()
 write = FileWriteTool()
 edit = FileEditTool()
 
+
+class UndoTool(Tool):
+    name = "undo"
+    toolset = "file"
+    description = (
+        "Undo previous filesystem changes made by tools (write, edit, ast_edit). "
+        "Restores modified files to their previous state and deletes newly created files."
+    )
+    approval = ApprovalLevel.RISKY
+    schema = {
+        "type": "object",
+        "properties": {
+            "path": {
+                "type": "string",
+                "description": (
+                    "Optional specific file to revert. If omitted, undoes all file changes from the most recent turn."
+                ),
+            },
+            "steps": {
+                "type": "integer",
+                "description": "Number of turns of file changes to undo (default 1).",
+                "default": 1,
+            },
+        },
+    }
+
+    async def run(self, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
+        backup_mgr = _get_backup_mgr(ctx)
+        if backup_mgr is None:
+            return ToolResult.err("Filesystem backup manager is not configured")
+
+        path = args.get("path")
+        steps = int(args.get("steps", 1))
+        res = backup_mgr.undo(
+            session_id=getattr(ctx, "session_id", ""),
+            steps=steps,
+            path=str(path) if path else None,
+            cwd=getattr(ctx, "cwd", ""),
+        )
+        if not res.success:
+            return ToolResult.err(res.message)
+        return ToolResult.ok(res.message, raw=res.to_dict())
+
+
+undo = UndoTool()
 
 # ---------------------------------------------------------------------------
 # selectors / rendering

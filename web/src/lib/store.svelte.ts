@@ -123,6 +123,9 @@ export class XuBrainStore extends EventsMixin(
     compaction_retries: 1,
     context_skill_budget: 6000,
     prune_keep: 30,
+    loop_guard: true,
+    loop_guard_reasoning: true,
+    loop_guard_thresholds: [3, 5],
   });
   onboarded = $state(true);
 
@@ -155,7 +158,9 @@ export class XuBrainStore extends EventsMixin(
   avatar = $state<string | null>(null);
 
 
-  private listed = false;
+  /** Guards the connect resync so a slow pass cannot overlap the next
+   *  (re)connect. Private: not part of the store's public surface. */
+  private syncInFlight = false;
   private readonly openSessionsKey = "xu.open-session-ids";
   private readonly activeSessionKey = "xu.active-session-id";
   private readonly avatarKey = "xu.avatar";
@@ -182,10 +187,10 @@ export class XuBrainStore extends EventsMixin(
     this.restoreSessionTabs();
     this.client.onStatusChange = (up) => {
       this.connected = up;
-      if (up && !this.listed) {
-        this.listed = true;
-        this.bootstrap().catch(() => {});
-      }
+      // Sync on EVERY (re)connect, not just the first. A transient failure of
+      // the initial fetch — or a brain restart — must not leave the shell with
+      // an empty config/provider/plugin list until a full page reload.
+      if (up) void this.sync();
     };
     this.client.onEvent((event, params) => this.onEvent(event, params));
     this.client.connect();
@@ -252,14 +257,25 @@ export class XuBrainStore extends EventsMixin(
     this.persistSessionTabs();
   }
 
-  /** Called once on first connect: fetch config, providers, detect onboarding. */
+  /** Fetch config, providers, plugins, … and restore the last session. Runs on
+   *  every (re)connect via `sync()`, so it must stay idempotent. */
   private async bootstrap(): Promise<void> {
-    await this.listSessions();
+    try {
+      await this.listSessions();
+    } catch (e) {
+      // The session list is the shell's first need, but a transient failure
+      // must not abort the rest of the sync (config/providers/plugins would
+      // then never load). Report the cause and carry on; the next sync retries.
+      console.error("[xu] session.list failed during bootstrap", e);
+    }
     const saved = typeof localStorage === "undefined" ? null : localStorage.getItem(this.activeSessionKey);
     const restoreId = saved && this.sessions.some((s) => s.id === saved)
       ? saved
       : this.openSessionIds.find((id) => this.sessions.some((s) => s.id === id));
-    if (restoreId) {
+    // Only restore when it isn't already the active tab: on a reconnect the
+    // session is already open, and re-opening it would yank the view back to
+    // the workspace (and clobber a live transcript with the persisted one).
+    if (restoreId && restoreId !== this.sessionId) {
       try { await this.openSession(restoreId); } catch { this.closeSessionTab(restoreId); }
     }
     try {
@@ -301,6 +317,45 @@ export class XuBrainStore extends EventsMixin(
     try {
       await this.refreshSubagents();
     } catch { /* subagents not ready */ }
+  }
+
+  /** One connect resync: pull everything the shell needs, then reconcile live
+   *  turn state. Guarded by `syncInFlight` so a slow pass cannot overlap the
+   *  next (re)connect, and never throws into the socket handler — the cause is
+   *  logged so a failed sync is visible, not a silently empty shell. */
+  private async sync(): Promise<void> {
+    if (this.syncInFlight) return;
+    this.syncInFlight = true;
+    try {
+      await this.bootstrap();
+      await this.reconcileLiveTurns();
+    } catch (e) {
+      console.error("[xu] connect sync failed", e);
+    } finally {
+      this.syncInFlight = false;
+    }
+  }
+
+  /** Reconnect resync: a dropped socket or a brain restart mid-turn means
+   *  `turn.finished`/`turn.failed` never arrived, so `busy` is stuck true and
+   *  the tab hides its transcript behind "thinking" forever. Re-read each open
+   *  tab's live snapshot and set `busy` in BOTH directions. Guarded: if a turn
+   *  event changed `busy` while the fetch was in flight, that fresher state
+   *  wins and we leave it alone. */
+  private async reconcileLiveTurns(): Promise<void> {
+    const ids = [...this.openSessionIds];
+    await Promise.all(ids.map(async (id) => {
+      const before = this.tabs[id]?.busy;
+      if (before === undefined) return; // tab not loaded yet — nothing to fix
+      try {
+        const got = await this.client.call<{ live?: unknown }>("session.get", { id });
+        const tab = this.tabs[id];
+        if (!tab || tab.busy !== before) return; // a turn event raced us
+        tab.busy = !!got.live;
+      } catch (e) {
+        console.error(`[xu] live-state resync failed for session ${id}`, e);
+      }
+    }));
   }
 
   private closeSessionTab(id: string): void {
@@ -525,11 +580,23 @@ this.persistSessionTabs();
         ]
       : text;
     tab.messages = [...tab.messages, { role: "user", content: userContent }];
-    await this.client.call("session.send", {
-      id: sid,
-      text,
-      ...(images && images.length ? { images } : {}),
-    });
+    // Capture the row the store actually holds: `$state` wraps nested objects,
+    // so the raw literal is not identity-equal to the stored row and filtering
+    // on it would leave the phantom bubble behind.
+    const optimistic = tab.messages[tab.messages.length - 1];
+    try {
+      await this.client.call("session.send", {
+        id: sid,
+        text,
+        ...(images && images.length ? { images } : {}),
+      });
+    } catch (e) {
+      // The send never reached the brain — pull the optimistic bubble back out
+      // so it does not linger as a message that was never sent, then rethrow so
+      // the caller can surface the error (never swallow it).
+      tab.messages = tab.messages.filter((m) => m !== optimistic);
+      throw e;
+    }
   }
 
   async listSessions(): Promise<void> {
@@ -602,20 +669,25 @@ this.persistSessionTabs();
   /** Cancel a specific queued (not yet flushed) message. The server replies
    *  with a queue.cancelled event on success, which removes the bubble.
    *  Entries the server already spliced into the live turn can't be
-   *  cancelled — their bubble clears on the next turn-end event instead. */
-  async cancelQueued(q: { id?: string }): Promise<void> {
+   *  cancelled — their bubble clears on the next turn-end event instead.
+   *  Returns whether the server really dropped it: false means the text
+   *  reached the model, so a caller must not hand it back to the composer. */
+  async cancelQueued(q: { id?: string }): Promise<boolean> {
     const sid = this.sessionId;
-    if (!sid || !q.id) return; // not confirmed by the server yet — nothing to cancel
-    await this.client.call("session.queue.cancel", { id: sid, queued_id: q.id });
+    if (!sid || !q.id) return false; // not confirmed by the server yet — nothing to cancel
+    const res = await this.client.call<{ cancelled?: boolean }>(
+      "session.queue.cancel", { id: sid, queued_id: q.id },
+    );
+    return res?.cancelled === true;
   }
 
-  /** Steer the queue: interrupt the running turn so the queued messages run
-   *  now — the brain stops the turn and its chaining tail starts the first
-   *  queued message as a fresh turn; the rest follow in order. */
-  async steerQueue(): Promise<void> {
+  /** Send one queued message right now: the brain promotes it to the front of
+   *  the queue and stops the running turn, whose chaining tail starts it as a
+   *  fresh turn — the rest of the queue then follows in order. A no-op when
+   *  the entry was already spliced into the live turn. */
+  async steerQueued(q: { id?: string }): Promise<void> {
     const sid = this.sessionId;
-    const q = this.queued.find((x) => x.id);
-    if (!sid || !q?.id) return; // nothing confirmed by the server yet
+    if (!sid || !q.id) return; // nothing confirmed by the server yet
     await this.client.call("session.queue.steer", { id: sid, queued_id: q.id });
   }
 
@@ -665,26 +737,36 @@ this.persistSessionTabs();
 
   async saveConfig(key: string, value: unknown): Promise<void> {
     await this.client.call("config.set", { key, value });
-    if (key === "approval_mode") this.config.approval_mode = String(value);
-    if (key === "context_length") this.config.context_length = Number(value);
-    if (key === "approval_modes") this.config.approval_modes = (value ?? {}) as AppConfig["approval_modes"];
-    if (key === "compress_threshold") this.config.compress_threshold = Number(value);
-    if (key === "retain_ratio") this.config.retain_ratio = Number(value);
-    if (key === "compaction_retries") this.config.compaction_retries = Number(value);
-    if (key === "context_skill_budget") this.config.context_skill_budget = Number(value);
-    if (key === "job_timeout") this.config.job_timeout = value == null || value === "" ? null : Number(value);
-    if (key === "max_parallel_subagents") this.config.max_parallel_subagents = Number(value);
-    if (key === "vision_model") this.config.vision_model = value ? String(value) : null;
-    if (key === "model_fallbacks") this.config.model_fallbacks = (value ?? []) as string[];
-    if (key === "firecrawl_enabled") this.config.firecrawl_enabled = Boolean(value);
-    if (key === "firecrawl_key") this.config.firecrawl_key = value ? String(value) : null;
-    if (key === "prune_keep") this.config.prune_keep = Number(value);
-    if (key === "memory_mnemosyne_inject") this.config.memory_mnemosyne_inject = Boolean(value);
-    if (key === "memory_mnemosyne_embeddings") this.config.memory_mnemosyne_embeddings = Boolean(value);
-    if (key === "memory_mnemosyne_top_k") this.config.memory_mnemosyne_top_k = Number(value);
-    if (key === "memory_mnemosyne_max_chars") this.config.memory_mnemosyne_max_chars = Number(value);
-    if (key === "memory_autocapture") this.config.memory_autocapture = Boolean(value);
-    if (key === "memory_capture_min_interval") this.config.memory_capture_min_interval = Number(value);
+    // Rebuild the object instead of mutating the $state proxy in place. A
+    // direct `this.config.x = v` does not change the field's identity, so a
+    // consumer that reads `brain.config` once (a plugin layout's `void
+    // brain.config`, an `$effect`/`$derived`) never repaints. Assigning a fresh
+    // object re-runs every consumer; `refreshConfig` already does the same.
+    const patch: Partial<AppConfig> = {};
+    if (key === "approval_mode") patch.approval_mode = String(value);
+    if (key === "context_length") patch.context_length = Number(value);
+    if (key === "approval_modes") patch.approval_modes = (value ?? {}) as AppConfig["approval_modes"];
+    if (key === "compress_threshold") patch.compress_threshold = Number(value);
+    if (key === "retain_ratio") patch.retain_ratio = Number(value);
+    if (key === "compaction_retries") patch.compaction_retries = Number(value);
+    if (key === "context_skill_budget") patch.context_skill_budget = Number(value);
+    if (key === "job_timeout") patch.job_timeout = value == null || value === "" ? null : Number(value);
+    if (key === "max_parallel_subagents") patch.max_parallel_subagents = Number(value);
+    if (key === "vision_model") patch.vision_model = value ? String(value) : null;
+    if (key === "model_fallbacks") patch.model_fallbacks = (value ?? []) as string[];
+    if (key === "firecrawl_enabled") patch.firecrawl_enabled = Boolean(value);
+    if (key === "firecrawl_key") patch.firecrawl_key = value ? String(value) : null;
+    if (key === "prune_keep") patch.prune_keep = Number(value);
+    if (key === "memory_mnemosyne_inject") patch.memory_mnemosyne_inject = Boolean(value);
+    if (key === "memory_mnemosyne_embeddings") patch.memory_mnemosyne_embeddings = Boolean(value);
+    if (key === "memory_mnemosyne_top_k") patch.memory_mnemosyne_top_k = Number(value);
+    if (key === "memory_mnemosyne_max_chars") patch.memory_mnemosyne_max_chars = Number(value);
+    if (key === "memory_autocapture") patch.memory_autocapture = Boolean(value);
+    if (key === "memory_capture_min_interval") patch.memory_capture_min_interval = Number(value);
+    if (key === "loop_guard") patch.loop_guard = Boolean(value);
+    if (key === "loop_guard_reasoning") patch.loop_guard_reasoning = Boolean(value);
+    if (key === "loop_guard_thresholds") patch.loop_guard_thresholds = (value ?? []) as number[];
+    if (Object.keys(patch).length) this.config = { ...this.config, ...patch };
   }
 
 

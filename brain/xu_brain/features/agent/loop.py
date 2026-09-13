@@ -15,28 +15,25 @@ a ``turn.approval``-style prompt the shell renders.
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass, field
 import json
 import time
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, TYPE_CHECKING
-
-
+from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
 from ...core.activity import activity
-from ...core.config import Config
 from ...core.bus import HookBus
+from ...core.config import Config
 from ...core.contract import RpcError
 from ...core.governance import ApprovalManager
 from ...core.notify import notify
+from ..agent.provider import ProviderManager, StopReason
 from ..memory import MemoryStore
-from .orchestrator import Orchestrator
-from ..tools.registry import ToolRegistry
 from ..session import Message, Session, SessionStore
 from ..skills import SkillsEngine
-from ..agent.provider import ProviderManager, StopReason
-from .scheduler import run_bounded
+from ..tools.logmeta import strip_note_arguments, tool_args
+from ..tools.registry import ToolRegistry
 from .attachments import _image_parts
 from .attachments import dereference as _dereference_images
 from .attachments import inject as _inject_images
@@ -46,9 +43,11 @@ from .compaction import CompactionMixin
 from .context import ContextMixin
 from .delegation import DelegationMixin
 from .live import LiveMixin
+from .loopguard import LoopGuard
+from .loopguard import Signal as LoopSignal
+from .orchestrator import Orchestrator
 from .prompt import PromptMixin
-
-
+from .scheduler import partition_tool_waves, run_bounded
 # Message the agent leaves when it asked for input (approval or `ask`) and the
 # user did not reply before the timeout: the turn halts and waits for the user.
 _PAUSE_MESSAGE = (
@@ -83,6 +82,7 @@ class Agent(DelegationMixin, LiveMixin, ContextMixin, PromptMixin, CompactionMix
         flat_plugins: PluginBus,
         config: Config,
         hooks: HookBus | None = None,
+        backups: Any = None,
     ) -> None:
         self.sessions = sessions
         self.data_home = data_home
@@ -96,6 +96,7 @@ class Agent(DelegationMixin, LiveMixin, ContextMixin, PromptMixin, CompactionMix
         self.config = config
         self.presets = None
         self.orchestrator: Orchestrator | None = None
+        self.backups = backups
         self._turns: dict[str, asyncio.Task[None]] = {}
         self._stop_events: dict[str, asyncio.Event] = {}
         self._subtasks: dict[str, asyncio.Future[str]] = {}
@@ -498,24 +499,34 @@ class Agent(DelegationMixin, LiveMixin, ContextMixin, PromptMixin, CompactionMix
         # display transcript: the user row was mirrored by `append` at turn
         # start, but mid-turn queued users and every assistant row are only
         # known here.
+        # Anchor the splits to THIS turn, never the session's first user row.
+        # `queue_splits[k]` is the step count at the k-th mid-turn drain, and
+        # `_drain_queue` appends exactly one user row per drain AFTER everything
+        # already persisted, with nothing else appending a user row mid-turn.
+        # So the k-th split belongs to the k-th of the LAST `len(splits)` user
+        # rows. Scanning from the session start instead let a split fire on a
+        # previous turn's user boundary: that old assistant + old user row were
+        # re-appended to the append-only `display` table (duplicating them) and
+        # the queued user row — which reaches `display` only via this path —
+        # was never written at all.
         splits = result.queue_splits or []
         turn_rows: list[Message] = []
         if splits:
-            si = 0
-            first_user = True
-            for i, r in enumerate(rows):
-                if r.role == "user" and not first_user and si < len(splits):
-                    split = splits[si]
-                    prev = splits[si - 1] if si > 0 else 0
-                    for j in range(i - 1, -1, -1):
-                        if rows[j].role == "assistant":
-                            rows[j].steps = list(result.steps[prev:split])
-                            turn_rows.append(rows[j])
-                            break
-                    turn_rows.append(r)  # queued user: never went through `append`
-                    si += 1
-                if r.role == "user":
-                    first_user = False
+            user_idx = [i for i, r in enumerate(rows) if r.role == "user"]
+            # Guarded rather than assumed: if a rewrite ever left fewer user
+            # rows than drains, skip distribution instead of mistaking this
+            # turn's own user row for a queued one.
+            queued_idx = (user_idx[len(user_idx) - len(splits):]
+                          if len(user_idx) >= len(splits) else [])
+            for si, i in enumerate(queued_idx):
+                split = splits[si]
+                prev = splits[si - 1] if si > 0 else 0
+                for j in range(i - 1, -1, -1):
+                    if rows[j].role == "assistant":
+                        rows[j].steps = list(result.steps[prev:split])
+                        turn_rows.append(rows[j])
+                        break
+                turn_rows.append(rows[i])  # queued user: never went through `append`
         # The final text and the remaining steps belong to the last assistant
         # row, which is not always the tail: a queued user message or a spliced
         # compaction note can sit after it. Searching backwards keeps the tool
@@ -592,10 +603,19 @@ class Agent(DelegationMixin, LiveMixin, ContextMixin, PromptMixin, CompactionMix
         messages = pre.get("messages", messages)
         if self.flat_plugins is not None:
             messages = await self.flat_plugins.before_llm(messages)
-        tools = self.registry.schemas_for_model(session.id)
+        allowed_tools = getattr(node, "tools", None) if node is not None else None
+        try:
+            tools = self.registry.schemas_for_model(session.id, allowed_tools=allowed_tools)
+        except TypeError:
+            tools = self.registry.schemas_for_model(session.id)
         registry = self.registry
         ctx = self._ctx(session, turn_id, model, node=node, depth=depth)
         registry.reset_breakers()
+        # Round-level repetition guard: one per turn. A loop is a property of
+        # what this turn has been doing so far, so a fresh turn also starts
+        # fresh — a stuck model across turns is a different (and user-visible)
+        # problem than one repeating itself inside a single turn.
+        guard = LoopGuard.for_config(self.config)
         assistant_text_parts: list[str] = []
         steps: list[dict[str, Any]] = []
         queue_splits: list[int] = []
@@ -612,6 +632,7 @@ class Agent(DelegationMixin, LiveMixin, ContextMixin, PromptMixin, CompactionMix
             stop_reason = StopReason.STOP
             usage: dict[str, int] = {}
             had_error = False
+            guard_signals: list[LoopSignal] = []  # thresholds this round crossed
 
             retry_max = self.config.retry_max()
             retry_base = self.config.retry_interval()
@@ -631,7 +652,12 @@ class Agent(DelegationMixin, LiveMixin, ContextMixin, PromptMixin, CompactionMix
                 req_reasoning = []
                 req_reasoning_sig = None
                 try:
-                    async for ev in self.providers.chat_stream(provider, model, messages, tools, max_tokens=self.config.session_max_tokens(session.id), signal=stop):
+                    async for ev in self.providers.chat_stream(
+                        provider, model, messages, tools,
+                        max_tokens=self.config.session_max_tokens(session.id),
+                        reasoning_effort=self.config.session_reasoning_effort(session.id),
+                        signal=stop,
+                    ):
                         if ev.error:
                             last_error = ev.error
                             err_retryable = ev.retryable
@@ -647,14 +673,21 @@ class Agent(DelegationMixin, LiveMixin, ContextMixin, PromptMixin, CompactionMix
                             if steps and steps[-1].get("kind") == "reasoning":
                                 steps[-1]["text"] = (steps[-1].get("text") or "") + ev.reasoning
                             else:
-                                steps.append({"kind": "reasoning", "text": ev.reasoning})
+                                # `_t0` is a private stamp; `_close_reasoning`
+                                # turns it into the `elapsed` the settled row
+                                # shows, and `_settle_reasoning` strips it from
+                                # a segment the turn never closed.
+                                steps.append({"kind": "reasoning", "text": ev.reasoning,
+                                              "_t0": time.perf_counter()})
                         if ev.reasoning_signature:
                             self._reasoning_sigs[turn_id] = ev.reasoning_signature
                             req_reasoning_sig = ev.reasoning_signature
                         if ev.delta:
+                            self._close_reasoning(steps)
                             streamed.append(ev.delta)
                             await self._emit_for(session.id, turn_id, "turn.delta", delta=ev.delta)
                         if ev.tool_call:
+                            self._close_reasoning(steps)
                             tool_calls.append(
                                 {"id": ev.tool_call.id, "type": "function",
                                  "function": {"name": ev.tool_call.name, "arguments": ev.tool_call.arguments}}
@@ -791,7 +824,9 @@ class Agent(DelegationMixin, LiveMixin, ContextMixin, PromptMixin, CompactionMix
             req_reasoning_text = "".join(req_reasoning)
             assistant_msg: dict[str, Any] = {"role": "assistant", "content": text}
             if tool_calls:
-                assistant_msg["tool_calls"] = tool_calls
+                # `_xu_note` is display metadata, not conversation context. The
+                # live/persisted step keeps it; provider history does not.
+                assistant_msg["tool_calls"] = [strip_note_arguments(call) for call in tool_calls]
             # thinking-mode models need this turn's own reasoning echoed back on
             # the next request in the same turn (tool rounds), not just on the
             # persisted rows of prior turns.
@@ -800,6 +835,13 @@ class Agent(DelegationMixin, LiveMixin, ContextMixin, PromptMixin, CompactionMix
             if req_reasoning_sig:
                 assistant_msg["reasoning_signature"] = req_reasoning_sig
             messages.append(assistant_msg)
+
+            # The round's own thinking is what may be looping: re-deriving the
+            # same argument round after round is a loop the model never sees.
+            if guard is not None:
+                signal = guard.observe_reasoning(req_reasoning_text)
+                if signal:
+                    guard_signals.append(signal)
 
             if had_error and not tool_calls:
                 # surface error, keep partial text
@@ -836,7 +878,11 @@ class Agent(DelegationMixin, LiveMixin, ContextMixin, PromptMixin, CompactionMix
                     activity.record("debug", "brain", f"tool {name} ok")
                 return res.output, res.error
 
-            parsed_calls: list[tuple[dict[str, Any], dict[str, Any], str]] = []
+            # Parsed args ride with the call: the loop guard fingerprints the
+            # whole payload (the step's `args` is a truncated chip summary),
+            # and "same call accidentally in a different key order" must still
+            # read as the same call.
+            parsed_calls: list[tuple[dict[str, Any], dict[str, Any], str, dict[str, Any]]] = []
             for tc in tool_calls:
                 fn = tc["function"]
                 name = fn["name"]
@@ -850,28 +896,41 @@ class Agent(DelegationMixin, LiveMixin, ContextMixin, PromptMixin, CompactionMix
                     break
                 step = self._capture_tool(name, args, session.id, call_id=tc.get("id"))
                 steps.append(step)
-                parsed_calls.append((tc, step, name))
+                parsed_calls.append((tc, step, name, args))
             # How many sub-agents this tool round spawns in total. Each chip
             # counted only its own call, so a 4-way fan-out of sibling calls read
             # "1 agent spawned" four times. Summing the round covers both shapes:
             # four sibling calls, or one call carrying a `tasks` batch.
             spawned = sum(s.get("subagent_count") or 0
-                          for _, s, n in parsed_calls if n == "delegate")
-            for _, s, n in parsed_calls:
+                          for _, s, n, _a in parsed_calls if n == "delegate")
+            for _, s, n, _a in parsed_calls:
                 if n == "delegate":
                     s["subagent_count"] = spawned
-            all_delegates = len(parsed_calls) > 1 and all(name == "delegate" for _, _, name in parsed_calls)
-            if all_delegates:
-                limit = int(ctx.config.get("max_parallel_subagents", len(parsed_calls)) or len(parsed_calls))
-                settled = await run_bounded(
-                    parsed_calls,
-                    lambda item: execute_tool_call(item[0], item[1]),
-                    limit,
-                )
-            else:
-                settled = [await execute_tool_call(tc, step) for tc, step, _ in parsed_calls]
-
-            for (tc, step, name), result in zip(parsed_calls, settled):
+            tool_lookup = getattr(registry, "get", None)
+            waves = partition_tool_waves(parsed_calls, cwd=session.cwd, tool_lookup=tool_lookup)
+            settled: list[tuple[str, str | None] | BaseException] = []
+            for wave in waves:
+                if stop.is_set():
+                    break
+                if len(wave) == 1:
+                    tc, step, _n, _a = wave[0]
+                    try:
+                        settled.append(await execute_tool_call(tc, step))
+                    except BaseException as exc:
+                        settled.append(exc)
+                else:
+                    limit = len(wave)
+                    if any(name == "delegate" for _, _, name, _ in wave):
+                        sub_limit = int(ctx.config.get("max_parallel_subagents", limit) or limit)
+                        limit = min(limit, sub_limit)
+                    limit = max(1, limit)
+                    wave_results = await run_bounded(
+                        wave,
+                        lambda item: execute_tool_call(item[0], item[1]),
+                        limit,
+                    )
+                    settled.extend(wave_results)
+            for (tc, step, name, _args), result in zip(parsed_calls, settled):
                 if isinstance(result, BaseException):
                     result_text, error = f"tool {name} failed: {result}", str(result)
                     step["status"] = "error"
@@ -880,24 +939,53 @@ class Agent(DelegationMixin, LiveMixin, ContextMixin, PromptMixin, CompactionMix
                 else:
                     result_text, error = result
                 messages.append({"role": "tool", "tool_call_id": tc["id"], "tool_name": name, "content": result_text})
+            # The round has actually run, so this is when its shape is known:
+            # an identical call-set to the previous round is the loop a tool
+            # round makes. The reminder lands after the tool results — after
+            # what it talks about — and before whatever comes next in the turn.
+            if guard is not None:
+                signal = guard.observe_tools(
+                    [(name, tool_args(args)) for _, _, name, args in parsed_calls]
+                )
+                if signal:
+                    guard_signals.append(signal)
+            if guard_signals:
+                note = guard.note(guard_signals)
+                line = guard.chip(guard_signals)
+                # A stop would leave the note unread context; the chip still
+                # records that the guard fired either way.
+                if not stop.is_set():
+                    guard.inject(messages, note)
+                activity.record("warn", "brain", f"loop guard · {line}", note)
+                top = max(guard_signals, key=lambda sg: (sg.tier, sg.count))
+                steps.append({"kind": "guard", "text": line,
+                              "count": top.count, "tier": top.tier})
+                await self._emit_for(session.id, turn_id, "turn.guard",
+                                     text=line, count=top.count, tier=top.tier)
             # Queue-send: drain after the tool round, before the next LLM request.
             drained = self._drain_queue(session.id, messages)
             if drained:
+                # The user just steered: the redirect changes what the model is
+                # trying to do, so its round count starts over rather than
+                # carrying a stale number into an instruction it never saw.
+                if guard is not None:
+                    guard.reset()
                 queue_splits.append(len(steps))
                 await self._emit_for(
                     session.id, turn_id, "turn.dequeue",
                     messages=[{"queued_id": d["queued_id"], "text": d["text"], "images": d["images"]} for d in drained],
                 )
             if not tool_calls and not drained:
-                return TurnResult(text=text, steps=steps, history=messages,
-                                   queue_splits=queue_splits)
+                return TurnResult(text=text, steps=self._settle_reasoning(steps),
+                                  history=messages, queue_splits=queue_splits)
             # Continue with tool results and/or queued user messages.
 
 
         # stopped before turn completed
         final_text = "".join(p for p in assistant_text_parts if p).strip()
-        return TurnResult(text=final_text, steps=steps, history=messages,
-                           queue_splits=queue_splits) if final_text or steps else None
+        return (TurnResult(text=final_text, steps=self._settle_reasoning(steps),
+                           history=messages, queue_splits=queue_splits)
+                if final_text or steps else None)
 
     def _session_model(self, session_id: str) -> str | None:
         return self.config.session_model(session_id)
@@ -918,6 +1006,7 @@ class Agent(DelegationMixin, LiveMixin, ContextMixin, PromptMixin, CompactionMix
             skills=self.skills,
             flat_plugins=self.flat_plugins,
             presets=self.presets,
+            backups=getattr(self, "backups", None),
             config={
                 **self.config.all(), "model": model,
                 "subtask": session.id in self._subtask_sessions,

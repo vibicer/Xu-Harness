@@ -250,7 +250,19 @@ async def _connect(name: str, spec: dict[str, Any], timeout: float, log: Any) ->
         timeout=float(spec["timeout"]) if spec.get("timeout") is not None else timeout,
         log=log,
     )
-    await client.start()
+    try:
+        await client.start()
+    except BaseException:
+        # start() can fail *after* the child is spawned — the realistic case is
+        # the `initialize` handshake timing out. Nothing else holds a reference
+        # to the client yet, so a failure to close here leaks the process group
+        # (disconnect/stop_all/shutdown all walk the sessions, not this local).
+        try:
+            await client.close()
+        except Exception as close_exc:  # noqa: BLE001 — the start() failure is the story
+            log(f"{name}: could not reap the child after a failed start: {close_exc}",
+                level="warning")
+        raise
     return client
 
 

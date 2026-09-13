@@ -88,6 +88,30 @@ def main():
 main()
 """
 
+# Per-call timeout bounds — the same clamp `bash` applies. A caller-supplied
+# value is clamped into this range: an unbounded one would hold the kernel lock
+# for as long as the model asked; a negative one would kill the kernel instantly.
+_EVAL_TIMEOUT_MIN = 1.0
+_EVAL_TIMEOUT_MAX = 600.0
+_EVAL_TIMEOUT_DEFAULT = 60.0
+
+
+def _clamp_timeout(value: Any, default: float) -> float:
+    """Bound a caller-supplied timeout to [_EVAL_TIMEOUT_MIN, _EVAL_TIMEOUT_MAX].
+
+    A non-numeric value falls back to `default`; NaN does too, since it
+    survives both `min` and `max` and would reach `asyncio.wait_for` as a
+    bogus deadline.
+    """
+    try:
+        t = float(value)
+    except (TypeError, ValueError):
+        return default
+    if t != t:  # NaN
+        return default
+    return min(max(t, _EVAL_TIMEOUT_MIN), _EVAL_TIMEOUT_MAX)
+
+
 # Kernel processes per session (mirrors terminal.py's shell pool).
 _KERNELS: dict[str, EvalKernel] = {}
 
@@ -196,10 +220,7 @@ class EvalTool(Tool):
         code = str(args.get("code", ""))
         if not code.strip():
             return ToolResult.err("empty code")
-        try:
-            timeout = float(args.get("timeout", 60))
-        except (TypeError, ValueError):
-            timeout = 60.0
+        timeout = _clamp_timeout(args.get("timeout", _EVAL_TIMEOUT_DEFAULT), _EVAL_TIMEOUT_DEFAULT)
         kernel = _kernel(ctx)
         resp = await kernel.run(code, timeout=timeout)
         parts = []

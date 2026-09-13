@@ -252,11 +252,11 @@ const PINNED = [
   "refreshTodo", "refreshToolsets", "reloadPlugins", "renameSession", "renameTheme",
   "replyAsk", "requestSubRunId", "resolveApproval", "saveConfig", "savePersona",
   "send", "session", "sessionDropins", "sessionSkills", "sessionToolsets", "sessions", "setActivePersona", "setApprovalMode", "setAvatar",
-  "setBgfx", "setCustomLayout", "setCwd", "setDropinEnabled", "setGlass", "setLayout", "setModel",
+  "setBgfx", "setCustomLayout", "setCwd", "setDropinEnabled", "setEffort", "setGlass", "setLayout", "setModel",
   "setNotify", "setPersona", "setPluginEnabled", "setPluginSetting",
   "setProviderEnabled", "setRules", "setSessionDropinEnabled", "setSessionPreset", "setSessionSkill", "setSessionToolEnabled", "setSkill", "setTheme",
   "setToolEnabled", "setView", "shiftSessionTab", "skills", "spawnSubagent", "state",
-  "status", "steerQueue", "stop", "subagentActivity", "subagentActivityUpdate", "subagents",
+  "status", "steerQueued", "stop", "subagentActivity", "subagentActivityUpdate", "subagents",
   "subRuns", "switchSession", "testNotify", "testProvider", "theme", "ThemePreset",
   "themes", "todos", "toggleYolo", "toolsets", "TurnDraft", "turns", "updateMemory",
   "updateThemeColors", "upsertPreset", "view", "ViewName", "XuBrainStore",
@@ -294,7 +294,7 @@ const HOMES: Record<string, string[]> = {
     "renameSession", "saveConfig", "send",
     "session", "sessions", "setApprovalMode", "setAvatar", "setCwd",
     "setNotify", "setPersona", "setRules", "setView", "shiftSessionTab",
-    "state", "status", "steerQueue", "stop", "switchSession", "testNotify", "toggleYolo",
+    "state", "status", "steerQueued", "stop", "switchSession", "testNotify", "toggleYolo",
     "turns", "view",
   ],
   "store/appearance.svelte.ts": [
@@ -325,7 +325,7 @@ const HOMES: Record<string, string[]> = {
   ],
   "store/providers.svelte.ts": [
     "addProvider", "deleteProvider", "models", "providers",
-    "refreshProviders", "setModel", "setProviderEnabled", "testProvider",
+    "refreshProviders", "setEffort", "setModel", "setProviderEnabled", "testProvider",
   ],
   "store/skills.svelte.ts": [
     "loadSkillBody", "refreshSessionSkills", "refreshSkills", "sessionSkills",

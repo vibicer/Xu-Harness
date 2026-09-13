@@ -2,6 +2,7 @@
 
 Run: uv run pytest tests/test_approval_pause.py -v
 """
+
 from __future__ import annotations
 
 import sys
@@ -69,7 +70,7 @@ async def test_approval_timeout_pauses_turn():
     registry.register(_RiskyTool())  # type: ignore[arg-type]
     agent = _FakeAgent()
 
-    result = await registry.run("risky", {}, _ctx(agent), emit=lambda *a, **k: None)
+    result = await registry.run("risky", {}, _ctx(agent), emit=_emit)
 
     assert result.error is True
     assert agent.paused == [("s1", None)]
@@ -80,8 +81,14 @@ async def test_approval_deny_does_not_pause():
     registry.register(_RiskyTool())  # type: ignore[arg-type]
     agent = _FakeAgent()
 
-    result = await registry.run("risky", {}, _ctx(agent), emit=lambda *a, **k: None)
+    result = await registry.run("risky", {}, _ctx(agent), emit=_emit)
 
     assert result.error is True
     assert result.output == "denied: denied by user"
     assert agent.paused == []
+
+
+async def _emit(event: str, **kw: object) -> None:
+    """Early denials now emit a settled error chip too."""
+    assert event == "turn.tool"
+    assert kw["status"] == "error"

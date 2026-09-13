@@ -11,7 +11,7 @@
 
 {#if images.length}
   <div class="att-preview">
-    {#each images as img, i (img)}
+    {#each images as img, i (i)}
       <div class="att-item">
         <img class="att-thumb" src={img} alt="pending attachment" />
         <button class="att-x" title="remove" aria-label="remove attachment" onclick={() => onremove(i)}><Icon name="x" size={12} /></button>

@@ -14,7 +14,8 @@
   type NumKey =
     | "context_length" | "compress_threshold" | "retain_ratio" | "compaction_retries"
     | "context_skill_budget" | "max_parallel_subagents" | "job_timeout" | "retry_max"
-    | "retry_interval";
+    | "retry_interval"
+    | "loop_warn_after" | "loop_escalate_after";
   type StagedKey = NumKey | "firecrawl_key";
   type Staged = Record<NumKey, number | null> & { firecrawl_key: string };
 
@@ -28,8 +29,26 @@
     job_timeout: { min: 1, step: 1, unit: "s" },
     retry_max: { min: 0, step: 1 },
     retry_interval: { min: 1, step: 1, unit: "s" },
+    // loop guard trip points: the nudge and its escalation (round counts)
+    loop_warn_after: { min: 2, max: 50, step: 1 },
+    loop_escalate_after: { min: 3, max: 50, step: 1 },
   };
   const KEYS = Object.keys(SPEC).concat("firecrawl_key") as StagedKey[];
+
+  /** One thresholds list is two staged numbers: what the first reminder rides
+   *  after, and what escalates it. `null` keeps a field blank while typing. */
+  function loopStaged(thresholds: number[] | undefined): Record<"loop_warn_after" | "loop_escalate_after", number | null> {
+    const [first, second] = thresholds ?? [];
+    return { loop_warn_after: first ?? null, loop_escalate_after: second ?? null };
+  }
+  /** A staged threshold pair becomes the brain's two trip points, or null when
+   *  either field is mid-edit or the pair cannot escalate. */
+  function thresholdsOf(d: Staged): [number, number] | null {
+    const a = d.loop_warn_after, b = d.loop_escalate_after;
+    if (a == null || b == null || Number.isNaN(a) || Number.isNaN(b)) return null;
+    const lo = Math.min(a, b), hi = Math.max(a, b);
+    return lo < 2 || hi > 50 || lo === hi ? null : [lo, hi];
+  }
 
   function fromConfig(): Staged {
     const c = brain.config;
@@ -44,6 +63,7 @@
       retry_max: c.retry_max,
       retry_interval: c.retry_interval,
       firecrawl_key: c.firecrawl_key ?? "",
+      ...loopStaged(c.loop_guard_thresholds),
     };
   }
 
@@ -92,7 +112,18 @@
     err = "";
     saving = true;
     try {
+      // The guard trip points are one list, so they commit together: a
+      // half-typed second field would ship a one-entry list the brain rejects.
+      if ((["loop_warn_after", "loop_escalate_after"] as StagedKey[]).some((k) => dirty.includes(k))) {
+        const pair = thresholdsOf(draft);
+        if (pair !== null) {
+          await brain.saveConfig("loop_guard_thresholds", pair);
+          draft.loop_warn_after = pair[0];
+          draft.loop_escalate_after = pair[1];
+        }
+      }
       for (const k of [...dirty]) {
+        if (k === "loop_warn_after" || k === "loop_escalate_after") continue;
         if (k === "firecrawl_key") {
           await brain.saveConfig(k, draft.firecrawl_key.trim() || null);
           continue;
@@ -218,7 +249,18 @@
   }
 
   const firecrawlEnabled = $derived(brain.config.firecrawl_enabled ?? false);
+  const guardOn = $derived(brain.config.loop_guard ?? true);
+  const guardReasoning = $derived(brain.config.loop_guard_reasoning ?? true);
   let showKey = $state(false);
+  async function toggleGuard(on: boolean, toReasoning = false): Promise<void> {
+    err = "";
+    try {
+      await brain.saveConfig(toReasoning ? "loop_guard_reasoning" : "loop_guard", on);
+      if (toReasoning && on) await brain.saveConfig("loop_guard", true);
+    } catch (e) {
+      err = e instanceof Error ? e.message : String(e);
+    }
+  }
   async function toggleFirecrawl(on: boolean): Promise<void> {
     err = "";
     try {
@@ -243,6 +285,36 @@
     };
   });
 </script>
+
+{#snippet switchRow(
+    name: string,
+    on: boolean,
+    flip: (on: boolean) => Promise<void>,
+    desc: string,
+    sub?: boolean,
+    flipSub?: (on: boolean, toReasoning: boolean) => Promise<void>,
+  )}
+  <div class="cfg-row">
+    <div class="label">
+      {name}<small>{desc}</small>
+    </div>
+    <div class="ctrl">
+      <span class="state-badge">{on ? "ON" : "OFF"}</span>
+      <label class="toggle">
+        <input type="checkbox" aria-label={name} checked={on} onchange={(e) => void flip(e.currentTarget.checked)} />
+        <span class="track"></span>
+        <span class="thumb"></span>
+      </label>
+      {#if sub !== undefined && flipSub}
+        <span class="k-step" aria-label="{name} — also watch reasoning">
+          <input type="checkbox" aria-label="{name} reasoning" checked={sub} disabled={!on}
+            onchange={(e) => void flipSub(e.currentTarget.checked, true)} />
+          <span class="u">reasoning</span>
+        </span>
+      {/if}
+    </div>
+  </div>
+{/snippet}
 
 {#snippet numRow(k: NumKey, name: string, desc: string, ph = "")}
   <div class="cfg-row" class:dirty={changed(k)}>
@@ -456,6 +528,16 @@
       <span class="t">Reliability</span>
       <span class="d">what happens when a provider call fails</span>
     </div>
+    {@render switchRow(
+      "loop guard",
+      guardOn,
+      (on) => toggleGuard(on),
+      "remind a turn that keeps repeating itself — same tools or same reasoning",
+      guardReasoning,
+      toggleGuard,
+    )}
+    {@render numRow("loop_warn_after", "loop warn after", "identical rounds before the first reminder")}
+    {@render numRow("loop_escalate_after", "loop escalate after", "identical rounds before the louder reminder")}
     {@render numRow("retry_max", "retry max", "provider-retry attempts per turn")}
     {@render numRow("retry_interval", "retry interval", "base backoff · grows +2 s each try")}
   </div>

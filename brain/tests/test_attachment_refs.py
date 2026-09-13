@@ -185,6 +185,7 @@ def _turn_agent(vision: str | None, session_model: str, stream):
         retry_max=lambda: 0,
         retry_interval=lambda: 0,
         session_max_tokens=lambda _sid: None,
+        session_reasoning_effort=lambda _sid: None,
         session_model=lambda _sid: session_model,
         vision_model=lambda: vision,
         model_fallbacks=lambda: [],
